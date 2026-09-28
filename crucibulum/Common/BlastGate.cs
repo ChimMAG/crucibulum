@@ -33,8 +33,11 @@ public enum GatePosition
 public static class BlastGate
 {
     /// <summary>
-    /// How far the plate slides aside, in voxels, to uncover the inlet completely. Five, because the
-    /// plate starts at x 5.5 and the block ends at 16 - any further and it hangs off the forge.
+    /// How far the plate slides aside, in voxels, to uncover the inlet completely. Five, which is
+    /// four and a half to clear the inlet plus half a voxel so the two do not sit flush. What sets
+    /// the ceiling is no longer the plate but the handle leading it: plate and handle together run
+    /// x 3.5 to 10, so five takes the pair to 15 - which is where the forge's own front wall ends,
+    /// and any further out the handle hangs in the air against the background.
     /// </summary>
     public const float FullSlide = 5f;
 

@@ -7,16 +7,44 @@
 	"elements": [
 		{
 			"name": "gate",
-			"comment": "The slide plate, sitting just proud of the wall face over the inlet. It slides sideways rather than swinging: a flap this size pivoted out of the wall would stand three voxels clear of the block, and swung inwards it would clip through stone on the way.",
-			"from": [5.5, 2.5, 15.06],
-			"to": [10.5, 7.5, 15.44],
+			"comment": "The slide plate, sitting just proud of the wall face over the inlet. It slides sideways rather than swinging: a flap this size pivoted out of the wall would stand three voxels clear of the block, and swung inwards it would clip through stone on the way. It sits two voxels left of centre, with the inlet, to leave the handle that leads it room to park against the right-hand end of the wall at full open.",
+			"from": [3.5, 2.5, 15.06],
+			"to": [8.5, 7.5, 15.44],
 			"faces": {
-				"north": { "texture": "#metal", "uv": [5.5, 8.5, 10.5, 13.5] },
+				"north": { "texture": "#metal", "uv": [3.5, 8.5, 8.5, 13.5] },
 				"east":  { "texture": "#metal", "uv": [7.0, 8.5, 7.4, 13.5] },
-				"south": { "texture": "#metal", "uv": [5.5, 8.5, 10.5, 13.5] },
+				"south": { "texture": "#metal", "uv": [3.5, 8.5, 8.5, 13.5] },
 				"west":  { "texture": "#metal", "uv": [7.0, 8.5, 7.4, 13.5] },
-				"up":    { "texture": "#metal", "uv": [5.5, 7.0, 10.5, 7.4] },
-				"down":  { "texture": "#metal", "uv": [5.5, 7.0, 10.5, 7.4] }
+				"up":    { "texture": "#metal", "uv": [3.5, 7.0, 8.5, 7.4] },
+				"down":  { "texture": "#metal", "uv": [3.5, 7.0, 8.5, 7.4] }
+			}
+		},
+		{
+			"name": "handle-arm",
+			"comment": "The arm carrying the grip out past the plate's leading edge - the edge that moves away from the inlet as the gate opens. On the trailing edge the handle would be drawn back over the uncovered inlet at every open notch, standing in the draught of the thing it is there to keep your hands off.",
+			"from": [8.5, 4.5, 15.06],
+			"to": [9.5, 5.5, 15.44],
+			"faces": {
+				"north": { "texture": "#metal", "uv": [8.5, 10.5, 9.5, 11.5] },
+				"east":  { "texture": "#metal", "uv": [7.0, 10.5, 7.4, 11.5] },
+				"south": { "texture": "#metal", "uv": [8.5, 10.5, 9.5, 11.5] },
+				"west":  { "texture": "#metal", "uv": [7.0, 10.5, 7.4, 11.5] },
+				"up":    { "texture": "#metal", "uv": [8.5, 7.0, 9.5, 7.4] },
+				"down":  { "texture": "#metal", "uv": [8.5, 7.0, 9.5, 7.4] }
+			}
+		},
+		{
+			"name": "handle-grip",
+			"comment": "The grip - a bar with air above, below and beside it, so a pair of tongs has somewhere to close. It stands a little proud of the plate so it reads as a rod rather than as more plate, and it stays inside the low front band that counts as a click on the gate, so the part that looks grabbable is the part that takes the click. At full open its right face lands on x 15, which is where the forge's front wall ends - any further out and it hangs in the air against the background.",
+			"from": [9.5, 3.0, 15.06],
+			"to": [10.0, 7.0, 15.72],
+			"faces": {
+				"north": { "texture": "#metal", "uv": [9.5, 9.0, 10.0, 13.0] },
+				"east":  { "texture": "#metal", "uv": [7.0, 9.0, 7.7, 13.0] },
+				"south": { "texture": "#metal", "uv": [9.5, 9.0, 10.0, 13.0] },
+				"west":  { "texture": "#metal", "uv": [7.0, 9.0, 7.7, 13.0] },
+				"up":    { "texture": "#metal", "uv": [9.5, 7.0, 10.0, 7.7] },
+				"down":  { "texture": "#metal", "uv": [9.5, 7.0, 10.0, 7.7] }
 			}
 		}
 	]

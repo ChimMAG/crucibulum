@@ -25,15 +25,18 @@ namespace Crucibulum;
 /// <summary>
 /// A vanilla forge that will also hold a crucible.
 ///
-/// The crucible itself rides in the forge's own work item slot -- the 1.22 forge already accepts,
-/// heats and renders any collectible flagged <c>forgable</c>, so the body of the crucible glows
-/// through the incandescence range for free. What this class adds is the charge: four ingredient
-/// slots that stand in for the firepit's cooking slots, so that
+/// The crucible rides in the forge's own work item slot, which is possible at all because the 1.22
+/// forge accepts and heats any collectible flagged <c>forgable</c>. What this class adds is the
+/// charge: four ingredient slots that stand in for the firepit's cooking slots, so that
 /// <see cref="BlockSmeltingContainer"/>'s own CanSmelt/DoSmelt run unmodified and every alloy
-/// recipe in the game works here too.
+/// recipe in the game works here too. The heat is this class's as well -- see HeatCrucible for why
+/// vanilla's own ramp has to be written over rather than left alone -- and so is the drawing, since
+/// the pool of metal and the capped glow are <see cref="CrucibleRenderer"/>'s, not the forge's.
 ///
-/// The charge lives in the forge rather than in the crucible stack, exactly as it does in a
-/// firepit. Pull the crucible back out mid-melt and the ore stays behind in the coals.
+/// The charge lives in the forge's slots rather than in the crucible stack, exactly as it does in a
+/// firepit. It does not get left behind, though: taking the crucible hands the ore back first, and
+/// a crucible that leaves by any other route -- dragged out of the window, swapped for an ingot --
+/// is caught by OnSlotModifiedServer, which does the same.
 /// </summary>
 public class BlockEntityCrucibulumForge : BlockEntityForge
 {
@@ -191,7 +194,12 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
             // help offered was not always the one that ran.
             //
             // Everything else under shift - fuel, ingots, ignition - is the vanilla forge's.
-            if (slot.Empty) return TakeCrucible(byPlayer, blockSel) || TakeGate(byPlayer);
+            if (slot.Empty)
+            {
+                // A gate that refuses bare hands still claims the click - the player reached for
+                // the plate and was told why they could not take hold of it, which is an answer.
+                return TakeCrucible(byPlayer, blockSel) || TryTakeGate(byPlayer) || HasGate;
+            }
             if (IsCrucible(slot.Itemstack)) return PutCrucible(slot, byPlayer, blockSel);
             return false;
         }
@@ -213,7 +221,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         if (HasGate && CrucibulumModSystem.Config.EnableBlastGate
             && (WorkItemSlot.Empty || IsGateHit(blockSel?.HitPosition)))
         {
-            CycleGate(byPlayer);
+            TryCycleGate(byPlayer);
             return true;
         }
 
@@ -341,57 +349,6 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         MarkDirty(true);
         return true;
     }
-
-    /// <summary>
-    /// Moves up to <paramref name="quantity"/> from a slot into the crucible and returns how many
-    /// actually went. Kept free of any player so it can be exercised without one.
-    /// </summary>
-    public int AddCharge(ItemSlot fromSlot, int quantity = 1)
-    {
-        ItemSlot target = null;
-
-        // Prefer merging into a slot already holding the same thing, so four different ingredients
-        // still fit for an alloy.
-        foreach (ItemSlot s in ChargeSlots)
-        {
-            if (target != null) break;
-            if (!s.Empty && s.Itemstack.Equals(Api.World, fromSlot.Itemstack, GlobalConstants.IgnoredStackAttributes)
-                && s.StackSize < s.Itemstack.Collectible.MaxStackSize)
-            {
-                target = s;
-            }
-        }
-        foreach (ItemSlot s in ChargeSlots)
-        {
-            if (target == null && s.Empty) target = s;
-        }
-
-        if (target == null) return 0;
-
-        float crucibleTemp = CrucibleStack?.Collectible.GetTemperature(Api.World, CrucibleStack) ?? 20f;
-        float incomingTemp = fromSlot.Itemstack.Collectible.GetTemperature(Api.World, fromSlot.Itemstack);
-        float hadIngots = ChargeIngotEquivalents();
-
-        // Two stacks at different temperatures will not merge. Without matching them first you
-        // cannot top up a crucible that has already begun to warm: the click is silently refused,
-        // which looks exactly like the forge having decided it does not want any more ore.
-        fromSlot.Itemstack.Collectible.SetTemperature(Api.World, fromSlot.Itemstack, crucibleTemp);
-
-        int moved = fromSlot.TryPutInto(Api.World, target, quantity);
-        if (moved == 0)
-        {
-            // Put the temperature back rather than leaving a mysteriously warm stack in hand.
-            fromSlot.Itemstack?.Collectible.SetTemperature(Api.World, fromSlot.Itemstack, incomingTemp);
-            return 0;
-        }
-
-        MixInColdMetal(crucibleTemp, incomingTemp, hadIngots, ChargeIngotEquivalents() - hadIngots);
-
-        fromSlot.MarkDirty();
-        MarkDirty(true);
-        return moved;
-    }
-
 
     /// <summary>
     /// Draws the forge, or whatever has been chiselled over it, and then the flap.
@@ -611,14 +568,6 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         return true;
     }
 
-    /// <summary>Fits a gate without a player, for tests and the screenshot scenes.</summary>
-    public void FitGateForTesting(ItemStack plate, GatePosition position)
-    {
-        GateStack = plate;
-        GatePosition = position;
-        MarkDirty(true);
-    }
-
     public bool TakeGate(IPlayer byPlayer)
     {
         if (!HasGate) return false;
@@ -679,6 +628,49 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     }
 
     /// <summary>
+    /// Works the gate on a player's behalf, which is the only way a player ever works it - the
+    /// world click and the window's button both come through here, so the tongs rule is stated
+    /// once. <see cref="CycleGate"/> stays the bare mechanism, for tests and for the scenes.
+    /// </summary>
+    public bool TryCycleGate(IPlayer byPlayer)
+    {
+        if (!HasGate) return false;
+        if (!CanHandleTheGate(byPlayer)) return false;
+
+        CycleGate(byPlayer);
+        return true;
+    }
+
+    /// <summary>
+    /// Takes the plate back off, held to the same rule as working it. Without that, bare hands
+    /// could pull the whole hot plate free and refit it at whatever notch they wanted, which is
+    /// the gesture the requirement exists to stop. True only when the plate actually came off.
+    /// </summary>
+    public bool TryTakeGate(IPlayer byPlayer)
+    {
+        if (!HasGate) return false;
+        if (!CanHandleTheGate(byPlayer)) return false;
+
+        return TakeGate(byPlayer);
+    }
+
+    /// <summary>
+    /// Whether this player may touch the plate right now, saying why in the corner when they may
+    /// not. Runs on both sides, because the click does: the message is the server's to send.
+    /// </summary>
+    private bool CanHandleTheGate(IPlayer byPlayer)
+    {
+        if (!GateNeedsTongs || HoldingTongs(byPlayer)) return true;
+
+        if (Api is ICoreServerAPI sapi && byPlayer is IServerPlayer splayer)
+        {
+            sapi.SendIngameError(splayer, "crucibulum-gate-needs-tongs", Lang.Get("crucibulum:gate-needs-tongs"));
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Holds the work item at what the damped fire can actually reach.
     ///
     /// Vanilla's tick drives the work item at MaxTemperature regardless, and that property is not
@@ -736,10 +728,6 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         }
         else
         {
-            // And it climbs, which for a long time it did not: the shadow only ever fell, so a
-            // damped forge pinned the metal at whatever it was holding and a cold ingot under a
-            // throttled gate simply never heated.
-            //
             // At vanilla's own rate, which is what its tick would have done unthrottled, so a
             // damped fire heats a piece exactly as it always did and only stops lower.
             gatedTemp = Math.Min(ceiling,
@@ -787,15 +775,22 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     /// "charge added" call left to hang it off. It used to hang off one, which meant loading
     /// through the window skipped the penalty entirely while shift-clicking paid it.
     ///
-    /// A stack already at the crucible's temperature is in equilibrium and contributes nothing, so
-    /// this does nothing in the ordinary case and settles up exactly once per arrival. AddCharge
-    /// matches temperatures itself before merging, so metal that came that way is already settled
-    /// by the time this sees it and is not charged twice.
+    /// Called *before* the fire touches the crucible, which is what makes "colder than the
+    /// crucible" mean what it says. Run after heating instead, the charge always read one tick's
+    /// worth of rise behind - indistinguishable from genuinely cold ore - and the guard that told
+    /// the two apart asked only whether the charge had grown heavier. An equal-mass swap walked
+    /// straight past it: lift a hot twenty-nugget charge out, drop a cold twenty in before the next
+    /// tick, and the crucible never paid for it while the sync at the end of the tick heated the
+    /// new ore for nothing. Ordering removes the ambiguity rather than guarding against it.
+    ///
+    /// Metal hotter than the crucible is left alone here and pulled down by that same sync, which
+    /// is the behaviour this replaced and not something to change quietly.
     /// </summary>
-    protected float EqualiseCharge(ItemStack crucible, float crucibleTemp)
+    protected void EqualiseCharge(ItemStack crucible)
     {
+        float crucibleTemp = crucible.Collectible.GetTemperature(Api.World, crucible);
         float settled = Math.Max(0.1f, CrucibulumModSystem.Config.CrucibleThermalMass);
-        float coldMass = 0, coldHeat = 0, total = 0;
+        float coldMass = 0, coldHeat = 0;
 
         foreach (ItemSlot slot in ChargeSlots)
         {
@@ -804,49 +799,15 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
 
             float mass = IngotEquivalents(stack);
             if (mass <= 0) continue;
-            total += mass;
 
-            // Colder only. Metal hotter than the crucible is left to the sync below, which is the
-            // behaviour this replaced and not something to change quietly here.
             float temp = stack.Collectible.GetTemperature(Api.World, stack);
             if (temp < crucibleTemp - 0.5f) { coldMass += mass; coldHeat += temp * mass; }
             else settled += mass;
         }
 
-        // Only when metal has actually arrived. The charge is synced to the crucible at the end of
-        // every tick, so it always reads one tick's heating *behind* the crucible - which looks
-        // exactly like cold metal. Settling up on that would drag the crucible back down every
-        // tick and a crucible would never reach its melting point at all.
-        bool arrived = lastChargeIngots >= 0 && total > lastChargeIngots + 0.0001f;
-        lastChargeIngots = total;
-        if (!arrived) return crucibleTemp;
-
-        if (coldMass <= 0) return crucibleTemp;
+        if (coldMass <= 0) return;
 
         float mixed = (crucibleTemp * settled + coldHeat) / (settled + coldMass);
-        crucible.Collectible.SetTemperature(Api.World, crucible, mixed);
-        heatedTemp = mixed;
-        heatedStack = crucible;
-        return mixed;
-    }
-
-    /// <summary>
-    /// Cold metal tipped into a hot crucible cools the whole lot, in proportion to how much was
-    /// already in there against how much is going in - and against the clay itself, which is
-    /// carrying heat of its own. Throw a fistful of cold ore into a nearly-molten crucible and you
-    /// have genuinely set yourself back, which is what happens at a real furnace.
-    /// </summary>
-    protected void MixInColdMetal(float crucibleTemp, float incomingTemp, float hadIngots, float addedIngots)
-    {
-        if (addedIngots <= 0 || incomingTemp >= crucibleTemp) return;
-
-        float vessel = Math.Max(0.1f, CrucibulumModSystem.Config.CrucibleThermalMass);
-        float mixed = (crucibleTemp * (vessel + hadIngots) + incomingTemp * addedIngots)
-                      / (vessel + hadIngots + addedIngots);
-
-        ItemStack crucible = CrucibleStack;
-        if (crucible == null) return;
-
         crucible.Collectible.SetTemperature(Api.World, crucible, mixed);
         heatedTemp = mixed;
         heatedStack = crucible;
@@ -1022,8 +983,23 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     public string GateMetal =>
         GateStack?.Collectible.Variant.TryGetValue("metal", out string metal) == true ? metal : "copper";
 
-    /// <summary>Charge mass at the last tick, to spot metal arriving. See EqualiseCharge.</summary>
-    protected float lastChargeIngots = -1;
+    /// <summary>
+    /// Whether this forge's plate is currently too hot to handle bare, which is what
+    /// <see cref="CrucibulumConfig.RequireTongsForGate"/> asks about. Only a burning forge: the
+    /// plate on a cold one is just a plate.
+    /// </summary>
+    public bool GateNeedsTongs =>
+        HasGate
+        && CrucibulumModSystem.Config.EnableBlastGate
+        && CrucibulumModSystem.Config.RequireTongsForGate
+        && IsBurning;
+
+    /// <summary>
+    /// Tongs in the off hand. By tool rather than by item code, so a modded pair counts - which is
+    /// the same test vanilla's own ModSystemSubTongsDurability makes before it wears them.
+    /// </summary>
+    public static bool HoldingTongs(IPlayer byPlayer) =>
+        byPlayer?.Entity?.LeftHandItemSlot?.Itemstack?.Collectible?.Tool == EnumTool.Tongs;
 
     /// <summary>The crucible temperature clients were last told about. See OnCrucibleTick.</summary>
     protected float lastSyncedTemp = float.MinValue;
@@ -1065,12 +1041,16 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
             MarkDirty(true);
         }
 
-        // The vanilla forge tick already pushed the crucible up to the forge's own ceiling and then
-        // stopped. Carry it the rest of the way to the crucible ceiling; vanilla never lowers a
-        // temperature, so the two ticks do not fight.
+        // Cold ore settles up with the crucible before the fire is applied, then the crucible is
+        // carried from wherever the vanilla forge tick left it up to the crucible's own ceiling.
+        //
+        // The two ticks *do* fight: vanilla drives the work item at its own ceiling every tick and
+        // is not virtual, so HeatCrucible keeps a shadow figure and writes it over the top. That
+        // shadow is why the order matters - equalising afterwards would be arguing with a number
+        // this tick had already raised.
         CrucibleWork work = WorkState;
+        EqualiseCharge(crucible);
         float crucibleTemp = HeatCrucible(crucible, hoursPassed, work);
-        crucibleTemp = EqualiseCharge(crucible, crucibleTemp);
 
         // Only when something actually moved. Marking dirty serialises all six slots and sends them
         // to every client in range, and a forge sitting at its ceiling has nothing to tell them.
@@ -1084,13 +1064,18 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
 
         // The charge sits in the crucible, so it holds the crucible's temperature. This is also
         // what BlockSmeltingContainer reads to decide the temperature of the metal it pours out.
+        //
+        // Written every tick, not only when the reading has moved. SetTemperature also resets the
+        // stack's cooling clock, and a stack that skipped the write keeps an older one: it then
+        // crosses Collectible's 1/150-hour cooling threshold before the crucible does, drops a few
+        // degrees on its own, and the next tick's equalisation reads that as cold metal. Whether it
+        // is worth telling clients about is a separate question, asked first.
         foreach (ItemSlot slot in ChargeSlots)
         {
             ItemStack stack = slot.Itemstack;
             if (stack == null) continue;
-            if (Math.Abs(stack.Collectible.GetTemperature(Api.World, stack) - crucibleTemp) < 0.01f) continue;
+            if (Math.Abs(stack.Collectible.GetTemperature(Api.World, stack) - crucibleTemp) >= 0.01f) dirty = true;
             stack.Collectible.SetTemperature(Api.World, stack, crucibleTemp);
-            dirty = true;
         }
 
         bool stateChanged = work != lastSyncedWork;
@@ -1270,6 +1255,8 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
 
     protected void DoSmelt()
     {
+        ReturnSurplusCrucibles();
+
         // BlockSmeltingContainer.DoSmelt writes the result to the output slot, nulls the input slot
         // and empties the charge, so it needs a slot of its own to write into.
         DummySlot outputSlot = new DummySlot();
@@ -1288,6 +1275,30 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         SpawnReadySparks();
 
         MarkDirty(true);
+    }
+
+    /// <summary>
+    /// Hands back every vessel stacked behind the first, just before the melt would eat them.
+    ///
+    /// <see cref="BlockSmeltingContainer.DoSmelt"/> nulls the whole input stack and writes one
+    /// molten crucible over it, so a slot holding two comes out holding one. The slot itself has
+    /// refused a second vessel since this was found, but a world saved before that can still have
+    /// one seated, and a melt is precisely the moment it would disappear - so the surplus is
+    /// dropped at the forge rather than deleted.
+    /// </summary>
+    private void ReturnSurplusCrucibles()
+    {
+        ItemStack work = WorkItemStack;
+        if (work == null || !IsCrucible(work) || work.StackSize <= ItemSlotForgeWorkItem.MaxCrucibles) return;
+
+        ItemStack surplus = work.Clone();
+        surplus.StackSize = work.StackSize - ItemSlotForgeWorkItem.MaxCrucibles;
+        work.StackSize = ItemSlotForgeWorkItem.MaxCrucibles;
+        WorkItemSlot.MarkDirty();
+
+        Api.World.SpawnItemEntity(surplus, Pos);
+        Api.World.Logger.Audit("Gave back {0}x{1} stacked behind the melting crucible at {2}.",
+            surplus.StackSize, surplus.Collectible.Code, Pos);
     }
 
     protected static SimpleParticleProperties burstSparks;
@@ -1407,7 +1418,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         // click, so the click that works the gate on a bare forge is not available here.
         if (packetid == CycleGatePacketId)
         {
-            CycleGate(player);
+            TryCycleGate(player);
             return;
         }
 
@@ -1650,6 +1661,13 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
 
         BehaviorBlockInfo(forPlayer, dsc);
 
+        // The gate is a property of the forge, so it is written for every forge that has one. It
+        // used to be written inside the charge readout, which is reached only by a forge holding a
+        // crucible with ore in it - so a bare gated forge, one keeping an ingot warm, one with an
+        // empty crucible and one holding a finished melt all said nothing about the gate at all,
+        // and those are most of the states a gate is actually read in.
+        AppendGateInfo(dsc);
+
         if (IsMoltenCrucible(crucible))
         {
             var contents = ((BlockSmeltedContainer)crucible.Collectible).GetContents(Api.World, crucible);
@@ -1827,10 +1845,12 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     /// <summary>
     /// What is in the crucible, what share of the melt each ingredient is, and what it will make.
     ///
-    /// The forge has no GUI and this is the only place a player can read any of it, so it has to do
-    /// the job the firepit's crucible dialog does -- and one it does not: vanilla says nothing at all
-    /// when a mix does not match an alloy, which is indistinguishable from a mix that does. The
-    /// percentages are the fix, because alloy recipes are written in exactly those terms.
+    /// This is the block info, read by looking at the forge rather than by opening it, so it has to
+    /// stand on its own for a player who never opens the window -- and it does one thing the
+    /// firepit's crucible dialog does not: vanilla says nothing at all when a mix does not match an
+    /// alloy, which is indistinguishable from a mix that does. The percentages are the fix, because
+    /// alloy recipes are written in exactly those terms. DialogStatusText builds the window's shorter
+    /// version of the same reading.
     /// </summary>
     protected string BuildChargeText(ItemStack crucible)
     {
@@ -1867,20 +1887,8 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
             dsc.AppendLine(Lang.Get("crucibulum:forge-nomix"));
 
             AlloyRecipe candidate = CandidateAlloy(stacks);
-            if (candidate != null)
-            {
-                string parts = string.Join(", ", candidate.Ingredients.Select(ing => Lang.Get(
-                    "crucibulum:forge-alloy-part",
-                    BlockSmeltingContainer.GetMetal(ing.ResolvedItemstack),
-                    (int)Math.Round(ing.MinRatio * 100),
-                    (int)Math.Round(ing.MaxRatio * 100))));
-
-                dsc.AppendLine(Lang.Get("crucibulum:forge-alloy-needs",
-                    BlockSmeltingContainer.GetMetal(candidate.Output.ResolvedItemstack), parts));
-            }
+            if (candidate != null) dsc.AppendLine(AlloyRatioText(candidate));
         }
-
-        AppendGateInfo(dsc);
 
         float duration = crucible.Collectible.GetMeltingDuration(Api.World, chargeProvider, WorkItemSlot);
         float meltingPoint = crucible.Collectible.GetMeltingPoint(Api.World, chargeProvider, WorkItemSlot);

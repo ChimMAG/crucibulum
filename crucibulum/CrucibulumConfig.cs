@@ -8,6 +8,7 @@
 
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
+using Vintagestory.API.Common;
 
 namespace Crucibulum;
 
@@ -158,6 +159,28 @@ public class CrucibulumConfig
     [Category("Blast gate")]
     [Description("Whether a forge can be fitted with a blast gate at all.")]
     public bool EnableBlastGate = true;
+
+    /// <summary>
+    /// Whether the gate on a burning forge may only be worked with tongs in the off hand.
+    ///
+    /// Off by default, because it asks the player to carry a second tool to use a mechanic that was
+    /// free before. Turned on, a lit forge's plate is treated the way vanilla treats any metal over
+    /// <see cref="Vintagestory.API.Config.GlobalConstants.TooHotToTouchTemperature"/>: bare hands
+    /// are refused, with an in-game error saying why, and tongs - anything whose tool is
+    /// <see cref="EnumTool.Tongs"/>, so a modded pair counts - let it through.
+    ///
+    /// Only while the forge is burning. There is nothing hot about the plate on a cold forge, so
+    /// setting a gate before lighting the fire needs nothing in the off hand; and it is the only
+    /// time the setting would otherwise be pure friction, since a cold forge's gate does not matter
+    /// until it is lit. Taking the plate back off a burning forge is held to the same rule as
+    /// working it - otherwise bare hands could pull the whole hot plate free and refit it wherever
+    /// they liked, which is the gesture the requirement is meant to stop.
+    ///
+    /// Read live, so flipping it takes effect at once and needs no restart.
+    /// </summary>
+    [Category("Blast gate")]
+    [Description("Require tongs in the off hand to work a burning forge's gate.")]
+    public bool RequireTongsForGate = false;
 
     /// <summary>
     /// What each notch of the blast gate does to the fire, as a share of full draught. These are

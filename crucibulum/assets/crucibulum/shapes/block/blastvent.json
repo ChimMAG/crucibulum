@@ -7,16 +7,16 @@
 	"elements": [
 		{
 			"name": "vent",
-			"comment": "The inlet, flush on the outer face of the forge's low front wall. It cannot be sunk into the wall - that geometry is vanilla's and we are only adding to it, so anything behind z=15 is simply inside stone and never seen.",
-			"from": [6.0, 3.0, 14.99],
-			"to": [10.0, 7.0, 15.06],
+			"comment": "The inlet, flush on the outer face of the forge's low front wall. It cannot be sunk into the wall - that geometry is vanilla's and we are only adding to it, so anything behind z=15 is simply inside stone and never seen. It sits two voxels left of centre so that the plate, which parks to its right, has room for the handle on its leading edge.",
+			"from": [4.0, 3.0, 14.99],
+			"to": [8.0, 7.0, 15.06],
 			"faces": {
-				"north": { "texture": "#vent", "uv": [6.0, 9.0, 10.0, 13.0] },
-				"east":  { "texture": "#vent", "uv": [6.0, 9.0, 10.0, 13.0] },
-				"south": { "texture": "#vent", "uv": [6.0, 9.0, 10.0, 13.0] },
-				"west":  { "texture": "#vent", "uv": [6.0, 9.0, 10.0, 13.0] },
-				"up":    { "texture": "#vent", "uv": [6.0, 9.0, 10.0, 13.0] },
-				"down":  { "texture": "#vent", "uv": [6.0, 9.0, 10.0, 13.0] }
+				"north": { "texture": "#vent", "uv": [4.0, 9.0, 8.0, 13.0] },
+				"east":  { "texture": "#vent", "uv": [4.0, 9.0, 8.0, 13.0] },
+				"south": { "texture": "#vent", "uv": [4.0, 9.0, 8.0, 13.0] },
+				"west":  { "texture": "#vent", "uv": [4.0, 9.0, 8.0, 13.0] },
+				"up":    { "texture": "#vent", "uv": [4.0, 9.0, 8.0, 13.0] },
+				"down":  { "texture": "#vent", "uv": [4.0, 9.0, 8.0, 13.0] }
 			}
 		}
 	]

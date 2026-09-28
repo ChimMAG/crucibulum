@@ -61,6 +61,25 @@ anywhere on it works the gate.
 Metal already hotter than the damped fire cools down to it, which is the point: it makes a forge
 something you can hold a piece *at*, rather than only drive to the fuel's limit.
 
+The plate carries a handle — a short arm off its leading edge and a grip bar standing clear of
+that — so there is visibly something to take hold of, and it rides with the plate, which makes the
+notch readable from further off than the plate alone did. Leading rather than trailing: on the
+trailing edge it would be drawn back across the uncovered inlet as the gate opened, putting the
+one part you are meant to grab in the draught. Plate and inlet both sit a voxel and a half left
+of centre to leave it room to park against the wall at full open.
+
+#### Tongs
+
+`RequireTongsForGate` asks for tongs in the off hand before a **burning** forge's gate will move,
+which is the same rule vanilla applies to anything else too hot to touch. Bare hands get the
+in-game error rather than a silent refusal. It is off by default, since it asks a player to carry
+a second tool for something that was free before.
+
+Only while the fire is lit: there is nothing hot about a plate on a cold forge, so a gate can
+still be set before lighting it. Taking the plate back off is held to the same rule — otherwise
+bare hands could pull the whole hot plate free and refit it at whatever notch they liked. The
+tongs are not worn by it; anything whose tool is `Tongs` counts, so a modded pair works.
+
 It works on a seated crucible too, which is what makes bit smithing possible at a forge. Vanilla
 counts metal as workable at half its melting point, so copper bits are workable from 542 °C and
 molten at 1084 — a quarter-open gate settles a crucible of them at about 830 °C, hot enough to
@@ -267,6 +286,7 @@ firepit, which reads its ingredients from whatever heat source is holding it.
 | `HeatRate` | how briskly the crucible climbs; the curve eases in near the ceiling |
 | `MeltSpeedMultiplier` | 1 matches the firepit |
 | `EnableBlastGate` | whether a forge can be fitted with a gate at all |
+| `RequireTongsForGate` | tongs in the off hand to work a burning forge's gate (off) |
 | `CrucibleOnlyInForge` | refuse crucibles at the firepit, so metal only melts in the forge (off) |
 | `MeltIngots` | let ingots into the crucible, which a firepit refuses by size (off) |
 | `MeltBrokenToolHeads` | let a broken tool head in, for a whole ingot back; a firepit refuses it (off) |

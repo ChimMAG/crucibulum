@@ -24,7 +24,10 @@
 	"forge-gate": "Blast gate: {0} — reaches {1}°C",
 	"blockhelp-forge-fitgate": "Fit a blast gate",
 	"blockhelp-forge-workgate": "Work the blast gate",
+	"blockhelp-forge-workgate-tongs": "Work the blast gate (tongs in off hand)",
 	"blockhelp-forge-takegate": "Take the blast gate",
+	"blockhelp-forge-takegate-tongs": "Take the blast gate (tongs in off hand)",
+	"gate-needs-tongs": "The plate is too hot to touch - hold tongs in your off hand",
 	"forge-toocold-gate": "Needs {0}°C; the gate is holding this fire to {1}°C",
 	"gate-button": "Blast gate: {0} — {1}°C"
 }

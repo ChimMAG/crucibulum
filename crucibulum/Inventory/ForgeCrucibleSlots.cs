@@ -6,6 +6,7 @@
 // Software Foundation, either version 3 of the License, or (at your option) any
 // later version. See COPYING.LESSER, or <https://www.gnu.org/licenses/>.
 
+using System;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
@@ -22,6 +23,21 @@ namespace Crucibulum;
 /// </summary>
 public class ItemSlotForgeWorkItem : ItemSlotSurvival
 {
+    /// <summary>
+    /// How many crucibles a forge will hold. One, because
+    /// <see cref="BlockSmeltingContainer.DoSmelt"/> writes a single molten crucible into the output
+    /// and nulls the *whole* input stack, so every vessel stacked behind the first is destroyed the
+    /// moment the charge runs.
+    ///
+    /// Vanilla's own click path never stacks one - its merge branch is guarded by <c>!forgable</c>
+    /// and a crucible deliberately is forgable - so the limit never had to be written down before.
+    /// The window exposes this slot directly, and a shipped fired crucible stacks to four.
+    ///
+    /// Only crucibles. Ingots, plates and work items keep whatever the slot always gave them, so
+    /// smithing at a forge is untouched.
+    /// </summary>
+    public const int MaxCrucibles = 1;
+
     public ItemSlotForgeWorkItem(InventoryBase inventory) : base(inventory) { }
 
     public override bool CanHold(ItemSlot sourceSlot)
@@ -32,6 +48,34 @@ public class ItemSlotForgeWorkItem : ItemSlotSurvival
     public override bool CanTakeFrom(ItemSlot sourceSlot, EnumMergePriority priority = EnumMergePriority.AutoMerge)
     {
         return base.CanTakeFrom(sourceSlot, priority) && Accepts(sourceSlot.Itemstack);
+    }
+
+    /// <summary>
+    /// The capacity every merge goes through: a click into an empty slot, a same-item top-up, a
+    /// shift-click, a hopper. All of them trim what they move to this.
+    /// </summary>
+    public override int GetRemainingSlotSpace(ItemStack forItemstack)
+    {
+        int space = base.GetRemainingSlotSpace(forItemstack);
+        if (!BlockEntityCrucibulumForge.IsCrucible(forItemstack)) return space;
+
+        return Math.Min(space, Math.Max(0, MaxCrucibles - StackSize));
+    }
+
+    /// <summary>
+    /// The one path that does not. A flip trades whole stacks and asks neither
+    /// <see cref="GetRemainingSlotSpace"/> nor the collectible's own stack size about it, so four
+    /// crucibles on the cursor would swap places with an ingot in the forge and all four land here.
+    /// Refused outright rather than trimmed, because a flip has no way to move part of a stack.
+    /// </summary>
+    public override bool TryFlipWith(ItemSlot itemSlot)
+    {
+        if (BlockEntityCrucibulumForge.IsCrucible(itemSlot?.Itemstack) && itemSlot.StackSize > MaxCrucibles)
+        {
+            return false;
+        }
+
+        return base.TryFlipWith(itemSlot);
     }
 
     public static bool Accepts(ItemStack stack)

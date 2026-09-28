@@ -53,6 +53,26 @@ public class BlockCrucibulumForge : BlockForge
                 if (stacks != null) crucibleStacks.AddRange(stacks);
             }
 
+            // Each gate gesture appears twice, differing only in whether the line says to bring
+            // tongs. A WorldInteraction's text is fixed when the array is built and the array is
+            // cached for the session, so a requirement that comes and goes with the fire cannot be
+            // appended to a line later - it has to be a second line that stands in for the first.
+            WorldInteraction GateHelp(string langCode, string hotKey, bool withTongs,
+                System.Func<BlockEntityCrucibulumForge, BlockSelection, bool> offered) => new()
+            {
+                ActionLangCode = withTongs ? langCode + "-tongs" : langCode,
+                HotKeyCode = hotKey,
+                MouseButton = EnumMouseButton.Right,
+                GetMatchingStacks = (wi, bs, es) =>
+                {
+                    var be = api.World.BlockAccessor.GetBlockEntity(bs.Position) as BlockEntityCrucibulumForge;
+                    if (be?.HasGate != true) return null;
+                    if (be.GateNeedsTongs != withTongs) return null;
+
+                    return offered(be, bs) ? System.Array.Empty<ItemStack>() : null;
+                }
+            };
+
             return new[]
             {
                 new WorldInteraction
@@ -89,7 +109,7 @@ public class BlockCrucibulumForge : BlockForge
                         return be?.CrucibleStack != null ? System.Array.Empty<ItemStack>() : null;
                     }
                 },
-                // The gate. Without these three the whole thing is undiscoverable: there is nothing
+                // The gate. Without these the whole thing is undiscoverable: there is nothing
                 // in the world to say a plate can be fitted to a forge at all, and the player who
                 // reported this had to derive every gesture by experiment.
                 new WorldInteraction
@@ -105,40 +125,26 @@ public class BlockCrucibulumForge : BlockForge
                             : null;
                     }
                 },
-                new WorldInteraction
-                {
-                    ActionLangCode = "crucibulum:blockhelp-forge-workgate",
-                    MouseButton = EnumMouseButton.Right,
-                    GetMatchingStacks = (wi, bs, es) =>
-                    {
-                        // Offered where the click will actually work it: anywhere on a bare forge,
-                        // and on the plate itself once the forge is holding something, since there
-                        // the plain click belongs to the work item.
-                        var be = api.World.BlockAccessor.GetBlockEntity(bs.Position) as BlockEntityCrucibulumForge;
-                        if (be?.HasGate != true || !CrucibulumModSystem.Config.EnableBlastGate) return null;
-                        return be.WorkItemSlot.Empty || be.IsGateHit(bs.HitPosition)
-                            ? System.Array.Empty<ItemStack>()
-                            : null;
-                    }
-                },
-                new WorldInteraction
-                {
-                    ActionLangCode = "crucibulum:blockhelp-forge-takegate",
-                    HotKeyCode = "shift",
-                    MouseButton = EnumMouseButton.Right,
-                    GetMatchingStacks = (wi, bs, es) =>
-                    {
-                        // Shift with an empty hand takes the crucible first, so this is only the
-                        // gesture it actually is: a forge with a gate and no crucible in it.
-                        var be = api.World.BlockAccessor.GetBlockEntity(bs.Position) as BlockEntityCrucibulumForge;
-                        return be?.HasGate == true && be.CrucibleStack == null
-                            ? System.Array.Empty<ItemStack>()
-                            : null;
-                    }
-                }
+                // Offered where the click will actually work it: anywhere on a bare forge, and on
+                // the plate itself once the forge is holding something, since there the plain click
+                // belongs to the work item.
+                GateHelp("crucibulum:blockhelp-forge-workgate", null, false, WorkGateOffered),
+                GateHelp("crucibulum:blockhelp-forge-workgate", null, true, WorkGateOffered),
+
+                // Shift with an empty hand takes the crucible first, so this is only the gesture it
+                // actually is: a forge with a gate and no crucible in it.
+                GateHelp("crucibulum:blockhelp-forge-takegate", "shift", false, TakeGateOffered),
+                GateHelp("crucibulum:blockhelp-forge-takegate", "shift", true, TakeGateOffered)
             };
         });
     }
+
+    private static bool WorkGateOffered(BlockEntityCrucibulumForge be, BlockSelection bs) =>
+        CrucibulumModSystem.Config.EnableBlastGate
+        && (be.WorkItemSlot.Empty || be.IsGateHit(bs.HitPosition));
+
+    private static bool TakeGateOffered(BlockEntityCrucibulumForge be, BlockSelection bs) =>
+        be.CrucibleStack == null;
 
     public override bool OnBlockInteractStart(IWorldAccessor world, IPlayer byPlayer, BlockSelection blockSel)
     {
