@@ -36,6 +36,7 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
     private bool wasMelting;
     private bool closing;
     private string currentGate = "";
+    private bool composedWithGate;
     private bool sawCrucible;
 
     private ElementBounds chargeSlotBounds;
@@ -157,6 +158,7 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
         // on a click, so the click that works the gate on a bare forge cannot be used here - this
         // is the way to reach it without taking the crucible out first.
         bool haveGate = Attributes.GetInt("haveGate") > 0;
+        composedWithGate = haveGate;
         double gateY = crucibleY + slotSize + gap;
         ElementBounds gateBounds = ElementBounds.Fixed(0, gateY, panelWidth, 28);
 
@@ -186,11 +188,11 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
             .AddDialogTitleBar(DialogTitle, () => TryClose())
             .BeginChildElements(bgBounds)
                 .AddDynamicCustomDraw(panelBounds, OnBgDraw, "symbolDrawer")
-                .AddItemSlotGrid(Inventory, SendInvPacket, 4, chargeSlotIds, chargeSlotBounds, "chargeSlots")
+                .AddItemSlotGrid(Inventory, DoSendPacket, 4, chargeSlotIds, chargeSlotBounds, "chargeSlots")
 
                 .AddDynamicText("", statusFont, statusBounds, "statusText")
 
-                .AddItemSlotGrid(Inventory, SendInvPacket, 1, new[] { 0 }, crucibleBounds, "crucibleSlot")
+                .AddItemSlotGrid(Inventory, DoSendPacket, 1, new[] { 0 }, crucibleBounds, "crucibleSlot")
                 .AddDynamicText("", CairoFont.WhiteDetailText(), crucibleTempBounds, "crucibleTemp")
 
                 .AddIf(haveGate)
@@ -238,7 +240,13 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
         // gate means laying the window out again rather than re-lettering it in place.
         string gate = GateLabel();
 
-        if (status != currentStatus || melting != wasMelting || gate != currentGate)
+        // Whether there is a gate at all, and not only what it says. A plate fitted to a forge
+        // someone already has the window open on leaves every other line identical - a new gate is
+        // open, which is the ceiling the window was already quoting - so nothing else here notices
+        // it, and the button simply never appeared until the window was closed and reopened.
+        bool haveGate = Attributes.GetInt("haveGate") > 0;
+
+        if (status != currentStatus || melting != wasMelting || gate != currentGate || haveGate != composedWithGate)
         {
             currentStatus = status;
             wasMelting = melting;
@@ -293,9 +301,6 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
 
         ctx.Restore();
     }
-
-    private void SendInvPacket(object packet) =>
-        capi.Network.SendBlockEntityPacket(BlockEntityPosition.X, BlockEntityPosition.Y, BlockEntityPosition.Z, packet);
 
     public override void OnGuiOpened()
     {

@@ -48,8 +48,15 @@ public class CrucibleRenderer : IRenderer, ITexPositionSource
 
     // HasSolidifed allocates a DummySlot and looks up a melting point. Temperature does not move
     // fast enough to be worth asking sixty times a second.
+    //
+    // The "never asked yet" case is its own flag rather than a sentinel timestamp. It was
+    // long.MinValue, and `now - long.MinValue` overflows to a negative number for every real value
+    // of now, so the check was never due: moltenCached stayed false for the renderer's whole life
+    // and liquid metal was drawn on the solidified branch - which below 550 degC is no glow at all,
+    // so a crucible of molten tin sat there looking like a cold disc.
     private const long MoltenCheckMs = 250;
-    private long moltenCheckedAtMs = long.MinValue;
+    private long moltenCheckedAtMs;
+    private bool moltenChecked;
     private bool moltenCached;
 
     /// <summary>Units of metal that fill the crucible to the brim, for the purpose of pool height.</summary>
@@ -62,10 +69,9 @@ public class CrucibleRenderer : IRenderer, ITexPositionSource
     /// heating on the same coals and beside its own icon in the window, and both of those use this
     /// ramp - anything else reads as the wrong colour rather than as a choice.
     ///
-    /// An earlier version held the hue down to 900 degC while the charge was still solid, to keep
-    /// somewhere brighter to go for the moment it turned liquid. That backfired: 900 is exactly
-    /// where the ramp is pure red with no green in it at all, so a crucible spent its whole heat-up
-    /// pinned at flat salmon while its own icon two feet away was orange-gold.
+    /// Do not hold the hue back while the charge is solid to keep somewhere brighter to go: 900 degC
+    /// is exactly where the ramp is pure red with no green in it, so that pins a whole heat-up at
+    /// flat salmon beside an icon that is orange-gold.
     ///
     /// How *far* that colour is mixed over the texture is capped, though, and that is not vanilla.
     /// An ingot may sensibly turn into a featureless bright blob, because at that heat it is one; a
@@ -92,7 +98,11 @@ public class CrucibleRenderer : IRenderer, ITexPositionSource
         this.capi = capi;
     }
 
-    public void OnContentsChanged() => renderedUnits = -1;
+    public void OnContentsChanged()
+    {
+        renderedUnits = -1;
+        moltenChecked = false;   // different contents, so the cached answer is about something else
+    }
 
     private KeyValuePair<ItemStack, int> GetMelt(ItemStack crucible)
     {
@@ -110,6 +120,7 @@ public class CrucibleRenderer : IRenderer, ITexPositionSource
         renderedMetal = metalStack?.Collectible;
         renderedUnits = units;
         renderedMeshAngle = be.MeshAngleRad;
+        moltenChecked = false;
 
         if (crucible?.Block == null) return;
 
@@ -230,8 +241,9 @@ public class CrucibleRenderer : IRenderer, ITexPositionSource
         if (metal == null) return false;
 
         long now = capi.ElapsedMilliseconds;
-        if (now - moltenCheckedAtMs >= MoltenCheckMs)
+        if (!moltenChecked || now - moltenCheckedAtMs >= MoltenCheckMs)
         {
+            moltenChecked = true;
             moltenCheckedAtMs = now;
             moltenCached = !((BlockSmeltedContainer)crucible.Collectible).HasSolidifed(crucible, metal, capi.World);
         }
