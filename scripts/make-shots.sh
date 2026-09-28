@@ -29,7 +29,11 @@ ssh "$HOST" "cd $TREE && bash scripts/stop.sh >/dev/null 2>&1 || true"
 
 echo "==> syncing mod and shots to $HOST"
 ( cd "$REPO/../vstestkit" && bash scripts/sync-linux.sh "$HOST" --mod "$REPO/crucibulum" >/dev/null )
-rsync -a --delete "$REPO/shots/" "$HOST:mods/$SLOT/shots/" --exclude bin --exclude obj
+# Into the tree sync-linux.sh maintains, not a second copy beside it. These two used to point
+# at different places - the mod was synced to ~/$TREE/mods/$SLOT and the shots were booted
+# against ~/mods/$SLOT - so the scenes photographed whatever build happened to be sitting in
+# the other tree. It fails silently and looks exactly like a successful run.
+rsync -a --delete "$REPO/shots/" "$HOST:$TREE/mods/$SLOT/shots/" --exclude bin --exclude obj
 
 echo "==> booting a client at 1920x1080 with particles"
 ssh "$HOST" bash -s "$SLOT" "$TREE" <<'REMOTE'
@@ -62,8 +66,8 @@ mkdir -p /tmp/cru-shots && rm -f /tmp/cru-shots/*.png
 # already up never saw it - the shots then land in the fallback /tmp and the fetch finds
 # nothing.
 VSTK_SHOT_DIR=/tmp/cru-shots \
-VSTK_EXTRA_MODS="$HOME/mods/$SLOT/crucibulum/bin/Debug/Mods" \
-VSTK_EXTRA_ORIGINS="$HOME/mods/$SLOT/crucibulum/assets" \
+VSTK_EXTRA_MODS="$HOME/$TREE/mods/$SLOT/crucibulum/bin/Debug/Mods" \
+VSTK_EXTRA_ORIGINS="$HOME/$TREE/mods/$SLOT/crucibulum/assets" \
   bash scripts/boot.sh --client
 
 # Loud, not silent: if the window did not come up at the size we asked for, the shots would be
@@ -78,8 +82,8 @@ echo "==> taking the shots"
 # Deliberately tolerant: one scene failing should still let the others be collected, and the
 # summary line below says plainly whether any did.
 SHOTS_OK=1
-ssh "$HOST" "cd \$HOME/$TREE && bash scripts/run.sh \$HOME/mods/$SLOT/shots \
-    --mod \$HOME/mods/$SLOT/crucibulum --client --keep" > /tmp/cru-shotrun.log 2>&1 || SHOTS_OK=0
+ssh "$HOST" "cd \$HOME/$TREE && bash scripts/run.sh mods/$SLOT/shots \
+    --mod mods/$SLOT/crucibulum --client --keep" > /tmp/cru-shotrun.log 2>&1 || SHOTS_OK=0
 grep -E "^ok|^FAIL|^ERR|passed," /tmp/cru-shotrun.log || true
 
 ssh "$HOST" "cd \$HOME/$TREE && bash scripts/stop.sh" >/dev/null 2>&1 || true
@@ -91,7 +95,17 @@ mkdir -p "$OUT" "$RAW"
 rm -f "$RAW"/*.png "$OUT"/*.png
 rsync -a "$HOST:$RAW/*.png" "$RAW/"
 
-python3 - "$RAW" "$OUT" "$REPO/crucibulum/modicon.png" <<'PY'
+# Pillow does the cropping, and it is not part of a stock macOS python. Rather than make this
+# script depend on someone having pip-installed it, uv can supply one for the length of a single
+# command and install nothing; a machine that already has PIL just uses it.
+PY_IMG=(python3)
+if ! python3 -c "import PIL" 2>/dev/null; then
+  command -v uv >/dev/null 2>&1 \
+    || { echo "this step needs Pillow (pip install pillow) or uv on PATH" >&2; exit 1; }
+  PY_IMG=(uv run --quiet --with pillow python3)
+fi
+
+"${PY_IMG[@]}" - "$RAW" "$OUT" "$REPO/crucibulum/modicon.png" <<'PY'
 import sys, pathlib
 from PIL import Image
 
