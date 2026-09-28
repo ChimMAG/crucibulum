@@ -233,5 +233,46 @@ namespace Crucibulum.Tests
             Assert.True(shown.Contains("crucibulum:blockhelp-forge-takecrucible"), "shift still takes the crucible");
             Assert.True(shown.Contains("crucibulum:blockhelp-forge-opencrucible"), "and a plain click opens the window");
         }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task TheRendererWorksOutThatAMeltIsLiquid()
+        {
+            // The renderer asks HasSolidifed a few times a second and caches the answer. The "never
+            // asked" sentinel was long.MinValue, and now - long.MinValue overflows negative for
+            // every real value of now, so the check was never due: the cache sat on its false
+            // initial value for the renderer's whole life and liquid metal was drawn on the
+            // solidified branch. Tin is the case that shows it - it is liquid from 232 degC, well
+            // below the 550 the glow ramp starts at, so a molten tin crucible drew no glow at all.
+            //
+            // Driven by the game's own render loop, which has been calling OnRenderFrame on this
+            // renderer since the block entity initialised; this only reads what it concluded.
+            var be = await AForge();
+
+            var molten = World.Stack("game:crucible-brown-smelted");
+            ((BlockSmeltedContainer)molten.Collectible).SetContents(molten, World.Stack("game:ingot-tin"), 200);
+            molten.Collectible.SetTemperature(Sapi.World, molten, 400f);
+            be.WorkItemSlot.Itemstack = molten;
+            be.MarkDirty(true);
+
+            await Ticks(20);
+            await Frames.Wait(40);
+
+            await OnClient();
+            var clientBe = (BlockEntityCrucibulumForge)Capi.World.BlockAccessor.GetBlockEntity(ForgePos);
+            object renderer = Private(clientBe, "crucibleRenderer");
+            bool asked = (bool?)Private(renderer, "moltenChecked") ?? false;
+            bool liquid = (bool?)Private(renderer, "moltenCached") ?? false;
+            await OnServer();
+
+            Log($"  renderer asked: {asked}, liquid: {liquid}");
+            Assert.NotNull(renderer, "the client forge has a crucible renderer");
+            Assert.True(asked, "the renderer got as far as asking whether the melt is liquid");
+            Assert.True(liquid, "and tin at 400 degC is liquid, so it draws on the molten branch");
+        }
+
+        static object Private(object target, string name) =>
+            target?.GetType()
+                .GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                ?.GetValue(target);
     }
 }

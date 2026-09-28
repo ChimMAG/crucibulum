@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -6,6 +7,7 @@ using Crucibulum;
 using Vintagestory.API.Common;
 using Vintagestory.API.Client;
 using Vintagestory.API.MathTools;
+using Vintagestory.GameContent;
 using VsTestkit.Testing;
 using static VsTestkit.Testing.Vs;
 
@@ -231,6 +233,12 @@ namespace Crucibulum.Tests
             await Ticks(30);
             await Player.StandNear(ForgePos);
 
+            // With a plate in hand this click fits a gate instead of opening the window, and the
+            // failure then reads as the forge refusing to open. Tests share one player, and several
+            // in this class hand a plate back to them.
+            Log($"  in hand: {Player.Me.InventoryManager.ActiveHotbarSlot.Itemstack?.Collectible.Code.Path ?? "nothing"}");
+            await EmptyHand();
+
             await Interact.UseBlock(ForgePos, BlockFacing.UP);
             return await Gui.WaitFor<GuiDialogCrucibleForge>(120);
         }
@@ -313,12 +321,23 @@ namespace Crucibulum.Tests
 
             var gate = Mesh(clientBe, "GateMesh");
             var vent = Mesh(clientBe, "VentMesh");
+            Shape shape = Capi.Assets.TryGet("crucibulum:shapes/block/blastgate.json")?.ToObject<Shape>();
             await OnServer();
 
             Assert.True(hasGate, "the client knows about the gate - without this nothing can be drawn");
-            Log($"  gate mesh {gate?.VerticesCount ?? -1} verts, inlet mesh {vent?.VerticesCount ?? -1} verts");
+            Assert.NotNull(shape, "the plate's shape is in the zip");
+
+            // Against the shape's own element count rather than a bare "more than nothing". Six
+            // faces of four vertices each, so a cuboid that never reached the mesh is the
+            // difference between this passing and failing - which is how the handle could be
+            // present in the asset, asserted on by the test above, and absent from the screenshots.
+            int expected = shape.Elements.Length * 24;
+
+            Log($"  gate mesh {gate?.VerticesCount ?? -1} verts for {shape.Elements.Length} elements"
+              + $" (want {expected}), inlet mesh {vent?.VerticesCount ?? -1} verts");
+
             Assert.NotNull(gate, "the plate tesselated");
-            Assert.Greater(gate.VerticesCount, 0, "into actual geometry");
+            Assert.GreaterOrEqual(gate.VerticesCount, expected, "every element of the plate is drawn, handle included");
             Assert.NotNull(vent, "the inlet tesselated");
             Assert.Greater(vent.VerticesCount, 0, "into actual geometry");
         }
@@ -762,5 +781,398 @@ namespace Crucibulum.Tests
             }
             await Task.CompletedTask;
         }
+
+        #region What the gate says, and where
+
+        [VsTest]
+        public async Task TheGateIsReadableInEveryStateAForgeCanBeIn()
+        {
+            // The gate line used to be written inside the charge readout, which only a forge holding
+            // a crucible with ore in it ever reaches. Those are the minority of states: a bare gated
+            // forge, one keeping an ingot warm, one with an empty crucible and one holding a
+            // finished melt all said nothing about the gate, and a gate is read at a glance.
+            var be = await AForge();
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Quarter);
+            be.MarkDirty(true);
+            await Ticks(2);
+            Assert.Contains(BlockInfo(), "Blast gate", "a bare gated forge");
+
+            Forge.WorkItemSlot.Itemstack = World.Stack("game:ingot-tinbronze");
+            Forge.MarkDirty(true);
+            await Ticks(2);
+            Assert.Contains(BlockInfo(), "Blast gate", "one keeping an ingot warm");
+
+            Forge.WorkItemSlot.Itemstack = World.Stack("game:crucible-brown-fired");
+            Forge.MarkDirty(true);
+            await Ticks(2);
+            Assert.Contains(BlockInfo(), "Blast gate", "one holding an empty crucible");
+
+            var molten = World.Stack("game:crucible-brown-smelted");
+            ((BlockSmeltedContainer)molten.Collectible).SetContents(molten, World.Stack("game:ingot-copper"), 300);
+            Forge.WorkItemSlot.Itemstack = molten;
+            Forge.MarkDirty(true);
+            await Ticks(2);
+            Assert.Contains(BlockInfo(), "Blast gate", "one holding a finished melt");
+        }
+
+        [VsTest]
+        public async Task AForgeWithNoGateSaysNothingAboutOne()
+        {
+            var be = await AForge();
+            be.WorkItemSlot.Itemstack = World.Stack("game:ingot-tinbronze");
+            be.MarkDirty(true);
+            await Ticks(2);
+
+            string info = BlockInfo();
+            Log("  block info: " + info.Replace("\n", " | ").Trim());
+            Assert.False(info.Contains("Blast gate"), "no plate fitted, nothing to say");
+        }
+
+        static string BlockInfo()
+        {
+            var sb = new StringBuilder();
+            Forge.GetBlockInfo(null, sb);
+            string info = sb.ToString();
+            Log("  block info: " + info.Replace("\n", " | ").Trim());
+            return info;
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task FittingAPlateAddsTheButtonToAWindowAlreadyOpen()
+        {
+            // The window lays itself out again when the status line, the melt bar or the gate's own
+            // label changes. Fitting a plate changes none of those - a new gate is open, and open is
+            // the ceiling the window was already quoting - so the button simply never appeared until
+            // the window was closed and reopened.
+            var dlg = await AWindowOverAGatedForge(withGate: false);
+
+            await OnClient();
+            bool before = dlg.SingleComposer.GetButton("gateButton") != null;
+            await OnServer();
+            Assert.False(before, "no gate, no button");
+
+            Forge.FitGate(new DummySlot(World.Stack("game:metalplate-copper")), null);
+            await Ticks(30);
+
+            await OnClient();
+            var button = dlg.SingleComposer.GetButton("gateButton");
+            string label = (button as GuiElementTextButton)?.Text;
+            await OnServer();
+
+            Log($"  button after the plate went on: {label ?? "(none)"}");
+            Assert.NotNull(button, "the button arrives without closing and reopening the window");
+            Assert.Contains(label ?? "", "Blast gate", "and says what it is");
+
+            await Input.Press(GlKeys.Escape);
+            await Gui.WaitGone<GuiDialogCrucibleForge>(120);
+        }
+
+        #endregion
+
+        #region Tongs
+
+        /// <summary>
+        /// Puts tongs in the player's off hand, or empties it. Marked dirty because the client keeps
+        /// its own copy of the inventory and the tongs rule is read on both sides - a stack written
+        /// server-side and never synced leaves the client predicting a refusal the server allows.
+        /// </summary>
+        static async Task TongsInTheOffHand(bool holding)
+        {
+            ItemSlot offhand = Player.Me.Entity.LeftHandItemSlot;
+            offhand.Itemstack = holding ? World.Stack("game:tongs") : null;
+            offhand.MarkDirty();
+            await Ticks(3);
+        }
+
+        /// <summary>Runs a body with the tongs requirement on, and puts the config back afterwards.</summary>
+        static async Task WithTongsRequired(Func<Task> body)
+        {
+            bool original = CrucibulumModSystem.Config.RequireTongsForGate;
+            CrucibulumModSystem.Config.RequireTongsForGate = true;
+            try
+            {
+                await body();
+            }
+            finally
+            {
+                CrucibulumModSystem.Config.RequireTongsForGate = original;
+                await TongsInTheOffHand(false);
+            }
+        }
+
+        [VsTest]
+        public async Task TongsAreNotAskedForUntilTheOptionIsOn()
+        {
+            // Default off. The gate was free to work for four releases and turning this on is a
+            // choice a server makes, not something an update does to a world behind its back.
+            var be = await AForge();
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Open);
+            await TongsInTheOffHand(false);
+
+            Assert.False(be.GateNeedsTongs, "a burning forge asks for nothing by default");
+            Assert.True(be.TryCycleGate(Player.Me), "and bare hands work the gate");
+            Assert.Equal(GatePosition.Half, Forge.GatePosition, "which moved a notch");
+        }
+
+        [VsTest]
+        public async Task AHotPlateRefusesBareHandsAndYieldsToTongs()
+        {
+            var be = await AForge();
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Open);
+
+            await WithTongsRequired(async () =>
+            {
+                Assert.True(Forge.IsBurning, "the forge is lit, so the plate is hot");
+                Assert.True(Forge.GateNeedsTongs, "which is when the requirement bites");
+
+                await TongsInTheOffHand(false);
+                Assert.False(Forge.TryCycleGate(Player.Me), "bare hands are refused");
+                Assert.Equal(GatePosition.Open, Forge.GatePosition, "and the plate does not move");
+
+                await TongsInTheOffHand(true);
+                Assert.True(Forge.TryCycleGate(Player.Me), "tongs in the off hand are not");
+                Assert.Equal(GatePosition.Half, Forge.GatePosition, "and the plate slides a notch");
+            });
+        }
+
+        [VsTest]
+        public async Task AColdForgeNeedsNothingInTheOffHand()
+        {
+            // There is nothing hot about a plate on an unlit forge, and setting a gate before
+            // lighting the fire is the one time this would be friction for its own sake.
+            var be = await AForge(lit: false);
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Open);
+
+            await WithTongsRequired(async () =>
+            {
+                await TongsInTheOffHand(false);
+                Assert.False(Forge.IsBurning, "no fire");
+                Assert.False(Forge.GateNeedsTongs, "so no requirement");
+                Assert.True(Forge.TryCycleGate(Player.Me), "and the gate can be set by hand");
+                Assert.Equal(GatePosition.Half, Forge.GatePosition, "which it was");
+            });
+        }
+
+        [VsTest]
+        public async Task TheHotPlateCannotBePulledOffBareHanded()
+        {
+            // The hole this closes: if working the gate needs tongs but taking it does not, bare
+            // hands pull the whole hot plate free and refit it at whatever notch they like, which
+            // is the gesture the requirement exists to stop.
+            var be = await AForge();
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Shut);
+
+            await WithTongsRequired(async () =>
+            {
+                await TongsInTheOffHand(false);
+                Assert.False(Forge.TryTakeGate(Player.Me), "bare hands cannot take hold of it");
+                Assert.True(Forge.HasGate, "so the plate stays where it is");
+
+                await TongsInTheOffHand(true);
+                Assert.True(Forge.TryTakeGate(Player.Me), "tongs get it off");
+                Assert.False(Forge.HasGate, "leaving a plain forge");
+            });
+        }
+
+        [VsTest]
+        public async Task TurningTheGateOffTurnsTheTongsRuleOffWithIt()
+        {
+            // EnableBlastGate off means the forge behaves as vanilla did. A world that has switched
+            // the whole mechanic off should not still be asking anyone to carry tongs for it.
+            var be = await AForge();
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Shut);
+
+            await WithTongsRequired(async () =>
+            {
+                await TongsInTheOffHand(false);
+                CrucibulumModSystem.Config.EnableBlastGate = false;
+                try
+                {
+                    Assert.False(Forge.GateNeedsTongs, "no gate mechanic, no tongs rule");
+                    Assert.True(Forge.TryTakeGate(Player.Me), "and the plate still comes back out");
+                }
+                finally
+                {
+                    CrucibulumModSystem.Config.EnableBlastGate = true;
+                }
+            });
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task TheHelpAsksForTongsOnlyWhenTheyAreNeeded()
+        {
+            // The requirement comes and goes with the fire, and a WorldInteraction's text is fixed
+            // when the array is built and cached for the session - so this is the only thing that
+            // catches a stale line that names a rule the forge is not under.
+            var be = await AForgeOnTheFloor();
+            be.FitGateForTesting(World.Stack("game:metalplate-copper"), GatePosition.Open);
+            be.MarkDirty(true);
+            await Ticks(20);
+
+            await WithTongsRequired(async () =>
+            {
+                string cold = await OfferedGateHelp();
+                Log("  unlit: " + cold);
+                Assert.Contains(cold, "blockhelp-forge-workgate,", "a cold plate is worked bare-handed");
+                Assert.False(cold.Contains("workgate-tongs"), "and says nothing about tongs");
+                Assert.False(cold.Contains("takegate-tongs"), "nor for taking it off");
+
+                StandingForge.FuelSlot.Itemstack = World.Stack("game:coke", 4);
+                StandingForge.TryIgnite();
+                StandingForge.MarkDirty(true);
+                await WaitForTheClientToSeeTheFire();
+
+                string hot = await OfferedGateHelp();
+                Log("  lit:   " + hot);
+                Assert.Contains(hot, "blockhelp-forge-workgate-tongs,", "a hot one says to bring tongs");
+                Assert.Contains(hot, "blockhelp-forge-takegate-tongs,", "and so does taking it off");
+                Assert.False(hot.Contains("forge-workgate,"), "and the bare-handed line is gone");
+                Assert.False(hot.Contains("forge-takegate,"), "along with its twin");
+            });
+        }
+
+        /// <summary>
+        /// The help is drawn from the client's own copy of the block entity, so the requirement only
+        /// appears there once the fire has synced. Polled rather than slept on: Until takes a
+        /// synchronous predicate and reading the client's copy means hopping threads.
+        /// </summary>
+        static async Task WaitForTheClientToSeeTheFire()
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                await OnClient();
+                bool burning = (Capi.World.BlockAccessor.GetBlockEntity(StandingForgePos)
+                    as BlockEntityCrucibulumForge)?.IsBurning == true;
+                await OnServer();
+
+                if (burning) return;
+                await Ticks(4);
+            }
+
+            Assert.Fail("the client never heard that the forge was lit");
+        }
+
+        /// <summary>
+        /// The gate lines the client would actually draw for a click on the plate: the help array
+        /// carries every line the block knows about, and each one's GetMatchingStacks is what says
+        /// whether this forge, right now, is offering it. Returned comma-joined with a trailing
+        /// comma so a test can name an exact line - "workgate" is a prefix of "workgate-tongs".
+        /// </summary>
+        static async Task<string> OfferedGateHelp()
+        {
+            await OnClient();
+            var block = Capi.World.BlockAccessor.GetBlock(StandingForgePos);
+            var sel = new BlockSelection
+            {
+                Position = StandingForgePos.Copy(),
+                Face = BlockFacing.SOUTH,
+                HitPosition = new Vec3d(0.5, 0.3, 0.94),
+            };
+            var help = block.GetPlacedBlockInteractionHelp(Capi.World, sel, Capi.World.Player)
+                .Where(h => h.GetMatchingStacks == null || h.GetMatchingStacks(h, sel, null) != null)
+                .Select(h => h.ActionLangCode)
+                .ToArray();
+            await OnServer();
+
+            return string.Join(",", help) + ",";
+        }
+
+        #endregion
+
+        #region The handle
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task ThePlateHasAHandleAndItStaysGrabbable()
+        {
+            // The handle is there so the plate looks like something tongs could take hold of, which
+            // only holds up if the part that looks grabbable is the part that takes the click and
+            // never leaves the block as the gate opens. Both are geometry in a shipped asset, so
+            // both fail silently.
+            var be = await AForgeOnTheFloor();
+            await Ticks(5);
+
+            await OnClient();
+            Shape shape = Capi.Assets.TryGet("crucibulum:shapes/block/blastgate.json")?.ToObject<Shape>();
+            Shape ventShape = Capi.Assets.TryGet("crucibulum:shapes/block/blastvent.json")?.ToObject<Shape>();
+            await OnServer();
+
+            Assert.NotNull(shape, "the plate's shape is in the zip");
+            Assert.NotNull(ventShape, "and so is the inlet's");
+
+            var plate = shape.Elements.Single(e => e.Name == "gate");
+            var handle = shape.Elements.Where(e => e.Name?.StartsWith("handle") == true).ToArray();
+            var vent = ventShape.Elements.Single();
+            Log("  handle: " + string.Join(", ", handle.Select(e => e.Name)));
+            Assert.Greater(handle.Length, 0, "the plate carries a handle");
+
+            foreach (GatePosition pos in Enum.GetValues<GatePosition>())
+            {
+                StandingForge.FitGateForTesting(World.Stack("game:metalplate-copper"), pos);
+                double slide = BlastGate.Slide(pos);
+
+                foreach (var el in handle)
+                {
+                    foreach (Vec3d corner in Corners(el, slide))
+                    {
+                        Assert.InRange(corner.X * 16, WallLeft, WallRight,
+                            $"{el.Name} stays on the forge's front wall at {pos}");
+                        Assert.InRange(corner.Z, 0, 1, $"{el.Name} stays inside the block at {pos}");
+                        Assert.True(StandingForge.IsGateHit(AsMeshed(corner, StandingForge.MeshAngleRad)),
+                            $"a click on {el.Name} at {pos} counts as a click on the gate");
+                    }
+
+                    // The handle leads the plate rather than trailing it, so that it parks against
+                    // the wall as the gate opens instead of being drawn back across the uncovered
+                    // inlet. A handle sitting in the draught is the one place on the plate you would
+                    // least want to put the thing you are meant to take hold of.
+                    Assert.GreaterOrEqual(el.From[0] + slide * 16, vent.To[0],
+                        $"{el.Name} is clear of the inlet at {pos}");
+                }
+
+                double plateLeft = plate.From[0] + slide * 16;
+                double plateRight = plate.To[0] + slide * 16;
+                if (pos == GatePosition.Shut)
+                {
+                    Assert.LessOrEqual(plateLeft, vent.From[0], "shut, the plate covers the inlet");
+                    Assert.GreaterOrEqual(plateRight, vent.To[0], "all of it");
+                }
+                else if (pos == GatePosition.Open)
+                {
+                    Assert.GreaterOrEqual(plateLeft, vent.To[0], "open, the plate is off the inlet entirely");
+                }
+            }
+        }
+
+        /// <summary>
+        /// How wide the forge's own front wall is, from the vanilla shape's S element, [1,0,13] to
+        /// [15,11,15]. Past either end there is nothing behind the plate but sky, and a handle that
+        /// slides out there hangs in the air.
+        /// </summary>
+        const double WallLeft = 1.0;
+        const double WallRight = 15.0;
+
+        /// <summary>Every corner of an element, in block units, at the notch the plate is at.</summary>
+        static IEnumerable<Vec3d> Corners(ShapeElement el, double slide)
+        {
+            foreach (double x in new[] { el.From[0] / 16 + slide, el.To[0] / 16 + slide })
+                foreach (double y in new[] { el.From[1] / 16, el.To[1] / 16 })
+                    foreach (double z in new[] { el.From[2] / 16, el.To[2] / 16 })
+                        yield return new Vec3d(x, y, z);
+        }
+
+        /// <summary>
+        /// Where a point of the shape ends up once the mesh has been turned to face the way the
+        /// forge was placed, which is the form IsGateHit expects and undoes.
+        /// </summary>
+        static Vec3d AsMeshed(Vec3d point, float angle)
+        {
+            float c = GameMath.Cos(angle);
+            float s = GameMath.Sin(angle);
+            double x = point.X - 0.5;
+            double z = point.Z - 0.5;
+            return new Vec3d(0.5 + c * x + s * z, point.Y, 0.5 - s * x + c * z);
+        }
+
+        #endregion
     }
 }

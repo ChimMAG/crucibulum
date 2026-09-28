@@ -468,5 +468,110 @@ namespace Crucibulum.Tests
             await Gui.CloseDialogs();
             await OnCursor(null, 0);
         }
+
+        #region One crucible
+
+        /// <summary>
+        /// A forge holding one crucible, with its window open - which is the only state the work
+        /// item slot is ever on screen in, since the window belongs to the crucible.
+        /// </summary>
+        static async Task<BlockEntityCrucibulumForge> AWindowOnASeatedCrucible()
+        {
+            World.SetBlock("game:forge", ForgePos);
+            await Ticks(2);
+            foreach (var e in World.Entities(ForgePos, 8).OfType<EntityItem>()) e.Die();
+
+            var be = Forge;
+            be.WorkItemSlot.Itemstack = World.Stack("game:crucible-brown-fired");
+            foreach (var s in be.ChargeSlots) s.Itemstack = null;
+            be.MarkDirty(true);
+            await Ticks(2);
+
+            await Player.StandNear(ForgePos);
+            await EmptyPockets();
+            await Interact.UseBlock(ForgePos, BlockFacing.UP);
+            await Gui.WaitFor<GuiDialogCrucibleForge>(120);
+            return Forge;
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task TheWorkSlotTakesOneCrucibleAndRefusesASecond()
+        {
+            // Fired crucibles stack to four, and BlockSmeltingContainer.DoSmelt writes one molten
+            // crucible over the whole input stack - so every vessel the slot lets in behind the
+            // first is destroyed the moment the charge runs. Vanilla's click path never stacks one,
+            // because its merge branch is guarded by !forgable; the window puts the slot on screen
+            // and the guard with it.
+            await AWindowOnASeatedCrucible();
+
+            await OnCursor("game:crucible-brown-fired", 3);
+            await ClickSlot(ForgePos, 0, 3);
+
+            Log($"  work slot: {Forge.WorkItemSlot.StackSize}x{Forge.WorkItemStack?.Collectible.Code.Path}");
+            await OnClient();
+            int onCursor = Capi.World.Player.InventoryManager.MouseItemSlot.StackSize;
+            await OnServer();
+            Log($"  still on the cursor: {onCursor}");
+
+            Assert.Equal(1, Forge.WorkItemSlot.StackSize, "the forge holds one crucible, not four");
+
+            await Gui.CloseDialogs();
+            await OnCursor(null, 0);
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task ADifferentCrucibleSwapsOneForOne()
+        {
+            // The flip path, which is the one that asks neither the slot's remaining space nor the
+            // collectible's stack size: two crucibles that will not merge trade places wholesale, so
+            // a stack of four red ones would land on top of the brown one without this.
+            await AWindowOnASeatedCrucible();
+
+            await OnCursor("game:crucible-red-fired", 4);
+            await ClickSlot(ForgePos, 0, 4);
+
+            Log($"  work slot: {Forge.WorkItemSlot.StackSize}x{Forge.WorkItemStack?.Collectible.Code.Path}");
+            Assert.Equal(1, Forge.WorkItemSlot.StackSize, "still exactly one vessel in the forge");
+
+            await Gui.CloseDialogs();
+            await OnCursor(null, 0);
+        }
+
+        [VsTest(TimeoutMs = 180000)]
+        public async Task ACrucibleStackedByAnOlderBuildIsHandedBackRatherThanMelted()
+        {
+            // A world saved before the slot refused a second vessel can still have one seated, and
+            // the melt is exactly the moment it would disappear. Assigned straight into the slot
+            // because that is the only way to reproduce a save the current slot would not allow.
+            World.SetBlock("game:forge", ForgePos);
+            await Ticks(2);
+            foreach (var e in World.Entities(ForgePos, 8).OfType<EntityItem>()) e.Die();
+
+            var be = Forge;
+            be.WorkItemSlot.Itemstack = World.Stack("game:crucible-brown-fired", 3);
+            be.ChargeSlots[0].Itemstack = World.Stack("game:nugget-nativecopper", 20);
+            be.FuelSlot.Itemstack = World.Stack("game:coke", 8);
+            be.TryIgnite();
+            be.MarkDirty(true);
+
+            // The block entity accrues melt time on its own 200ms listener, in real time, so the
+            // calendar is moved once to bring the crucible up and then the melt is waited out.
+            await World.TickNow(ForgePos);
+            await Hours(1);
+            await World.TickNow(ForgePos);
+            await Until(() => IsMolten(Forge), 900, "the crucible turning molten");
+
+            Log($"  work slot: {Forge.WorkItemSlot.StackSize}x{Forge.WorkItemStack?.Collectible.Code.Path}"
+              + $", on the ground: {OnGround("crucible-brown-fired")}");
+
+            Assert.True(IsMolten(Forge), "the charge melted");
+            Assert.Equal(1, Forge.WorkItemSlot.StackSize, "one molten crucible came out");
+            Assert.Equal(2, OnGround("crucible-brown-fired"), "and the two behind it were handed back, not eaten");
+        }
+
+        static bool IsMolten(BlockEntityCrucibulumForge be) =>
+            be.WorkItemStack?.Collectible is BlockSmeltedContainer;
+
+        #endregion
     }
 }

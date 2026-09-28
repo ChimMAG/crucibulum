@@ -228,5 +228,89 @@ namespace Crucibulum.Tests
             SetTemp(be, temp);
             be.MarkDirty(true);
         }
+
+        #region Cold metal
+
+        const string CopperNugget = "game:nugget-nativecopper";
+
+        static float CrucibleTemp() =>
+            Forge.CrucibleStack.Collectible.GetTemperature(Sapi.World, Forge.CrucibleStack);
+
+        /// <summary>A lit forge whose crucible and charge have both settled at <paramref name="temp"/>.</summary>
+        static async Task<BlockEntityCrucibulumForge> ASettledCrucible(float temp, int nuggets)
+        {
+            var be = await ALitForge();
+            be.ChargeSlots[0].Itemstack = World.Stack(CopperNugget, nuggets);
+            SetTemp(be, temp);
+            be.ChargeSlots[0].Itemstack.Collectible.SetTemperature(Sapi.World, be.ChargeSlots[0].Itemstack, temp);
+            be.MarkDirty(true);
+
+            // One tick with nothing changing, so the crucible and the charge share a cooling clock
+            // and the next tick's reading is not an artefact of setting them up by hand.
+            await World.TickNow(ForgePos);
+            return Forge;
+        }
+
+        [VsTest]
+        public async Task SwappingAHotChargeForAnEquallyHeavyColdOneStillCostsTheHeat()
+        {
+            // The hole this closes. Cold metal used to be spotted by the charge getting *heavier*,
+            // because the charge always read one tick behind the crucible and that was the only way
+            // to tell real cold ore from the lag. Trade twenty hot nuggets for twenty cold ones
+            // between two ticks and the mass never moves, so nothing was charged - and the sync at
+            // the end of the tick then heated the new ore to the crucible's temperature for free.
+            var be = await ASettledCrucible(1000f, 20);
+            float before = CrucibleTemp();
+
+            // The swap, as a player doing it quickly between two 200ms ticks: same item, same count,
+            // cold. No amount of clicking can guarantee landing inside one tick, so it is staged.
+            be.ChargeSlots[0].Itemstack = World.Stack(CopperNugget, 20);
+            be.ChargeSlots[0].Itemstack.Collectible.SetTemperature(Sapi.World, be.ChargeSlots[0].Itemstack, 20f);
+            be.MarkDirty(true);
+
+            await World.TickNow(ForgePos);
+            float after = CrucibleTemp();
+
+            Log($"  crucible {before:0} degC -> {after:0} degC after an equal-mass cold swap");
+            Assert.Less(after, before - 100f, "the crucible pays for the cold metal");
+        }
+
+        [VsTest]
+        public async Task AChargeThatHasNotChangedIsNotChargedForAgain()
+        {
+            // The other side of it, and the reason the mass guard was there: settling up on the
+            // charge every tick would drag the crucible down for ever and it would never melt
+            // anything. Equalising before the fire is applied is what makes the reading honest.
+            var be = await ASettledCrucible(1000f, 20);
+
+            float start = CrucibleTemp();
+            for (int i = 0; i < 6; i++) await World.TickNow(ForgePos);
+            float end = CrucibleTemp();
+
+            Log($"  crucible {start:0} degC -> {end:0} degC over six quiet ticks");
+            Assert.Greater(end, start - 1f, "a settled charge takes nothing out of the crucible");
+        }
+
+        [VsTest(TimeoutMs = 90000)]
+        public async Task ColdOreAddedThroughTheChargeSlotsCoolsTheCrucible()
+        {
+            // The same penalty by the route a player actually takes: metal into the charge slots,
+            // nothing else. AddCharge no longer does any thermal work of its own, so this and a
+            // drag through the window are the same code path from here on.
+            var be = await ASettledCrucible(1000f, 5);
+            float before = CrucibleTemp();
+
+            var hand = new DummySlot(World.Stack(CopperNugget, 20));
+            hand.Itemstack.Collectible.SetTemperature(Sapi.World, hand.Itemstack, 20f);
+            Assert.Greater(be.AddCharge(hand, 20), 0, "the nuggets went in");
+
+            await World.TickNow(ForgePos);
+            float after = CrucibleTemp();
+
+            Log($"  crucible {before:0} degC -> {after:0} degC after twenty cold nuggets");
+            Assert.Less(after, before - 100f, "a fistful of cold ore sets the melt back");
+        }
+
+        #endregion
     }
 }

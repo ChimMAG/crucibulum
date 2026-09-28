@@ -52,7 +52,11 @@ public class ModDbShots
     static void PutFiredCrucible(BlockEntityCrucibulumForge be, float temp, params (string code, int qty)[] charge)
     {
         be.WorkItemSlot.Itemstack = World.Stack(Fired);
-        foreach (var (code, qty) in charge) be.AddCharge(new DummySlot(World.Stack(code, qty)), qty);
+        // Straight into the slots. The block entity has no charge-loading helper of its own - the
+        // window loads a crucible through the ordinary inventory machinery - and a scene only needs
+        // the ore to be there, not the thermodynamics of putting it there.
+        int chargeSlot = 0;
+        foreach (var (code, qty) in charge) be.ChargeSlots[chargeSlot++].Itemstack = World.Stack(code, qty);
 
         be.WorkItemStack.Collectible.SetTemperature(Sapi.World, be.WorkItemStack, temp);
         foreach (var slot in be.ChargeSlots)
@@ -276,24 +280,32 @@ public class ModDbShots
         await World.SetCalendarTo(500 * 24 + 11);
 
         // Four forges, one per gate position, so the whole range reads left to right.
+        //
+        // Shoulder to shoulder rather than spaced out. The subject is the plate and the handle on
+        // it, which are a few voxels across: a row seven blocks wide had to be shot from far enough
+        // back that the outer two fell off the frame and the hardware was too small to read.
         var positions = new[] { GatePosition.Shut, GatePosition.Quarter, GatePosition.Half, GatePosition.Open };
         BlockPos first = P(16, 1, 20);
         ClearAround(first, 40);
 
         for (int i = 0; i < positions.Length; i++)
         {
-            BlockPos f = first.AddCopy(i * 2, 0, 0);
+            BlockPos f = first.AddCopy(i, 0, 0);
             var be = Forge_(f);
             be.MeshAngleRad = 0;                     // all square on, so the four read as one row
-            be.FitGateForTesting(World.Stack("game:metalplate-copper"), positions[i]);
+            be.FitGate(new DummySlot(World.Stack("game:metalplate-copper")), null);
+            while (be.GatePosition != positions[i]) be.CycleGate(null);
             be.FuelSlot.Itemstack = World.Stack("game:coke", 4);
             be.TryIgnite();
             be.MarkDirty(true);
         }
         await Ticks(20);
 
-        await Aim(new Vec3d(first.X + 3.5, first.Y + 1.15, first.Z + 3.4), new Vec3d(first.X + 3.5, first.Y + 0.35, first.Z + 0.5), 30);
-        await Frames.Wait(30);
+        // Shot04's camera, which frames a row of forges the way the set expects. Centred on the
+        // seam between the middle two so the crosshair lands on a forge rather than picking out a
+        // square of grass in the middle of the frame.
+        await Aim(new Vec3d(first.X + 2.0, first.Y, first.Z + 4.0), new Vec3d(first.X + 2.0, first.Y + 0.30, first.Z + 0.5), 30);
+        await HideHud();
         Log("06 -> " + await Shot.Take(Out("06-blast-gate.png")));
     }
 }

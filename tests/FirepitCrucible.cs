@@ -241,6 +241,11 @@ namespace Crucibulum.Tests
             var forgePos = P(12, 0, 8);
             foreach (bool on in new[] { false, true })
             {
+                // Cleared between rounds. Setting a forge over a forge keeps the block entity, so
+                // the second round used to be putting a crucible into a forge that already had one
+                // - which passed only because the slot would stack them, and it no longer will.
+                World.SetBlock("game:air", forgePos);
+                await Ticks(1);
                 World.SetBlock("game:forge", forgePos);
                 await Ticks(2);
                 var forge = World.BE<BlockEntityCrucibulumForge>(forgePos);

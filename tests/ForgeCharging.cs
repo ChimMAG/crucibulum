@@ -16,9 +16,11 @@ namespace Crucibulum.Tests
     /// firepit holds it: a crucible carried off with ore in it would be invisible to the firepit,
     /// which reads its ingredients from whatever heat source is holding it.
     ///
-    /// These drive AddCharge/TakeCharge directly, so they run headless. Both are still the
-    /// programmatic way in, but a player no longer reaches either by clicking: shift is the
-    /// crucible itself now, and loading the charge is the window's job.
+    /// These load the charge through ForgeFixtures.AddCharge, which is the suite's own transport
+    /// into the slots and does nothing thermal, so they run headless. A player reaches neither of
+    /// these by clicking: shift is the crucible itself now, and loading the charge is the window's
+    /// job, which puts ore in through the ordinary inventory machinery. What the cold metal costs
+    /// is the block entity's tick either way.
     /// </summary>
     public class ForgeCharging
     {
@@ -143,7 +145,7 @@ namespace Crucibulum.Tests
         public async Task ColdOreDroppedStraightIntoASlotAlsoCoolsTheMelt()
         {
             // The window puts metal into the charge slots through the ordinary inventory
-            // machinery, never through AddCharge - so for a while this path skipped the cooling
+            // machinery, never through a helper - so for a while this path skipped the cooling
             // penalty that shift-clicking paid, and a crucible could be topped up for free by
             // opening the window instead. The settling now happens on the tick, so every route in
             // pays it.
@@ -175,12 +177,17 @@ namespace Crucibulum.Tests
         {
             // And it costs you: cold metal tipped into a hot crucible drags the whole lot down,
             // weighted by how much was already in there.
+            //
+            // Charged on the tick rather than where the metal goes in. AddCharge used to do its own
+            // mixing, which meant the one route a player actually takes - a drag into the window -
+            // was settled up by different arithmetic; now there is one model and this waits for it.
             var be = await PlaceForge();
             be.AddCharge(Holding(CopperNugget, 20), 20);
             be.WorkItemStack.Collectible.SetTemperature(Sapi.World, be.WorkItemStack, 1000f);
             be.ChargeSlots[0].Itemstack.Collectible.SetTemperature(Sapi.World, be.ChargeSlots[0].Itemstack, 1000f);
 
             be.AddCharge(Holding(CopperNugget, 60), 60);
+            await World.TickNow(ForgePos);
 
             float after = Forge.WorkItemStack.Collectible.GetTemperature(Sapi.World, Forge.WorkItemStack);
             Assert.Less(after, 1000f, "the crucible cooled");
