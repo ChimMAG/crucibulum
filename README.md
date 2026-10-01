@@ -290,6 +290,10 @@ firepit, which reads its ingredients from whatever heat source is holding it.
 | `CrucibleOnlyInForge` | refuse crucibles at the firepit, so metal only melts in the forge (off) |
 | `MeltIngots` | let ingots into the crucible, which a firepit refuses by size (off) |
 | `MeltBrokenToolHeads` | let a broken tool head in, for a whole ingot back; a firepit refuses it (off) |
+| `SparksSpreadFire` | let a melting charge's sparks start fires around the forge, if the world allows fire spread (off) |
+| `MeltSparkRate` | how many sparks a melting charge throws, as a multiple of the default (1); 0 for none |
+| `MeltDoneSparkBurst` | the burst of sparks when a melt finishes, as a multiple of the default (1); 0 for none |
+| `SparkLandingSeconds` | with sparks spreading fire, average seconds between sparks landing around a melting forge (10) |
 | `GateAirOpen`, `GateAirHalf`, `GateAirQuarter`, `GateAirShut` | what each notch does to the fire, as a share of full draught (1.0 / 0.85 / 0.7 / 0.55) |
 
 With [ConfigLib](https://mods.vintagestory.at/configlib) installed these appear on its settings
@@ -320,6 +324,32 @@ setting at all.
 
 It is read live: flip it in the config screen and it takes effect at once, with no restart. It is
 also the one thing in the mod that needs a Harmony patch - see below for why.
+
+### Sparks that start fires
+
+A charge throws sparks out of the crucible's mouth while it is melting, and stops once the metal
+is all liquid - a molten crucible only smokes. With `SparksSpreadFire` on, those sparks can set
+light to things. Every so often while the metal is melting - once every ten seconds on average,
+which `SparkLandingSeconds` sets - one comes down somewhere within two blocks of the forge. If it
+lands in an open space beside something that burns, it starts a fire there exactly as vanilla's
+spreading fire would, and if it lands on a pile of firewood or coal it lights the pile. Stone, clay
+and an empty floor do not care.
+
+It is off by default, and needs the world's own `allowFireSpread` on as well. Read live.
+
+A spark flies in a straight line from the crucible's mouth, and anything solid in the way stops
+it - so a forge walled in stone keeps its sparks to itself. A spark also has no player behind it to
+check claims against, so it keeps to the forge's: it neither lands on nor burns fuel in land
+claimed by a claim the forge is not inside. It is the claims that count, not who owns them - the
+same player's claim next door is still somewhere else.
+
+That holds for the spark only. A fire it starts is ordinary vanilla fire from then on and spreads
+as one, and vanilla fire that the game cannot trace to a player - a spark's, or lightning's - pays
+no attention to claims. On a server where that matters, leave `SparksSpreadFire` off.
+
+How the sparks look is separate from whether they can burn anything: `MeltSparkRate` scales the
+sparks a melting charge throws and `MeltDoneSparkBurst` the burst when a melt finishes, and 0 turns
+either off.
 
 ## How it hooks in
 

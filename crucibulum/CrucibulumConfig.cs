@@ -78,6 +78,57 @@ public class CrucibulumConfig
     public bool MeltBrokenToolHeads = false;
 
     /// <summary>
+    /// Whether the sparks a melting charge throws can set light to what they land on.
+    ///
+    /// A spark comes down somewhere within a couple of blocks of the forge every so often while the
+    /// metal is melting - not once it is molten - and where it lands next to something that burns,
+    /// it starts a fire the way vanilla's own spreading fire does; a pile of firewood or coal it
+    /// lands on is lit directly. Off by default, since it turns the forge into a hazard for
+    /// anyone who built a workshop out of wood. The world's own fire spread has to be on as well.
+    ///
+    /// The spark itself is held back by solid blocks between the crucible and where it would land,
+    /// and by land claims: it neither lands on nor burns fuel in a claim the forge is not inside. A
+    /// fire it does start is ordinary vanilla fire from then on, and spreads as one - which, like
+    /// any fire whose starter the game cannot name, pays no attention to claims.
+    ///
+    /// Read live.
+    /// </summary>
+    [Category("Sparks")]
+    [Description("Let a melting charge's sparks start fires around the forge, if the world allows fire spread.")]
+    public bool SparksSpreadFire = false;
+
+    /// <summary>
+    /// How often a melting charge throws sparks, as a multiple of the default. 0 turns them off;
+    /// the burst when a melt finishes has a setting of its own.
+    ///
+    /// Only how it looks: what can start a fire is <see cref="SparkLandingSeconds"/>. Read live.
+    /// </summary>
+    [Category("Sparks")]
+    [Description("How many sparks a melting charge throws, as a multiple of the default; 0 for none.")]
+    [Range(0, 5)]
+    public float MeltSparkRate = 1f;
+
+    /// <summary>
+    /// How big the burst of sparks is when a melt finishes, as a multiple of the default. 0 turns
+    /// it off. Read live.
+    /// </summary>
+    [Category("Sparks")]
+    [Description("The burst of sparks when a melt finishes, as a multiple of the default; 0 for none.")]
+    [Range(0, 5)]
+    public float MeltDoneSparkBurst = 1f;
+
+    /// <summary>
+    /// With <see cref="SparksSpreadFire"/> on, how many seconds go by on average between sparks
+    /// coming down somewhere around a melting forge. Each one lands at random within two blocks, and
+    /// most of a workshop floor will not burn, so this is the rate of chances rather than of fires.
+    /// Read live.
+    /// </summary>
+    [Category("Sparks")]
+    [Description("With sparks spreading fire, average seconds between sparks landing around a melting forge.")]
+    [Range(1, 600)]
+    public float SparkLandingSeconds = 10f;
+
+    /// <summary>
     /// How fast the forge burns while working a crucible, against the firepit's rate per second.
     ///
     /// The forge burns on the calendar and the firepit on the real clock, which left melting over

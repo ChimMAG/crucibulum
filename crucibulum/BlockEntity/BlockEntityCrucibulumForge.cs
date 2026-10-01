@@ -52,6 +52,24 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     /// <summary>Seconds of accumulated melt time, in the same units the firepit uses.</summary>
     protected float meltProgress;
 
+    /// <summary>
+    /// The charge is at its melting point and the melt is advancing. Not the same as progress being
+    /// above zero: progress drains back down when the fire falls below the melting point, and the
+    /// metal is not melting then. Synced, because it is what the client sparks on.
+    ///
+    /// Nor the same as <see cref="CrucibleWork.Melting"/>, which is about the fire - what the
+    /// crucible's temperature calls for, and so what fuel it burns. That reads Melting for a hot
+    /// mix that makes no alloy; this does not, because a charge that cannot smelt is not melting.
+    /// </summary>
+    protected bool melting;
+
+    /// <summary>
+    /// What clients were last told about <see cref="melting"/>, as of the last MarkDirty; see
+    /// OnCrucibleTick. The tree itself is written a little later, and can carry a newer value than
+    /// this records - which costs at most one sync more than needed, never one fewer.
+    /// </summary>
+    protected bool meltingAsLastSent;
+
     protected double lastCrucibleTickHours;
     protected bool wasMolten;
 
@@ -94,6 +112,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     public override void MarkDirty(bool redrawOnClient = false, IPlayer skipPlayer = null)
     {
         InvalidateStatusText();
+        meltingAsLastSent = melting;
         base.MarkDirty(redrawOnClient, skipPlayer);
     }
 
@@ -109,6 +128,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
 
     public ItemStack CrucibleStack => IsCrucible(WorkItemStack) ? WorkItemStack : null;
     public float MeltProgress => meltProgress;
+    public bool IsMelting => melting;
 
     /// <summary>The four ingredient slots, in dialog order.</summary>
     public ItemSlot[] ChargeSlots => chargeProvider.Slots;
@@ -164,7 +184,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         if (api is ICoreClientAPI capi)
         {
             capi.Event.RegisterRenderer(crucibleRenderer = new CrucibleRenderer(this, capi), EnumRenderStage.Opaque, "crucibulum-crucible");
-            RegisterGameTickListener(OnMoltenParticleTick, 150);
+            RegisterGameTickListener(OnParticleTick, 150);
         }
     }
 
@@ -843,6 +863,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         if (!any) return false;
 
         meltProgress = 0;
+        melting = false;
         MarkDirty(true);
         return true;
     }
@@ -1018,7 +1039,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         if (crucible == null)
         {
             // No crucible: any leftover charge just cools on its own in the itemstack.
-            if (meltProgress != 0) { meltProgress = 0; MarkDirty(); }
+            if (meltProgress != 0 || melting) { meltProgress = 0; melting = false; MarkDirty(); }
             wasMolten = false;
             return;
         }
@@ -1078,10 +1099,14 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
             stack.Collectible.SetTemperature(Api.World, stack, crucibleTemp);
         }
 
-        bool stateChanged = work != lastSyncedWork;
-        lastSyncedWork = work;
-
         if (UpdateMelt(dt, crucible, crucibleTemp)) dirty = true;
+        if (melting) MaybeLandASpark(dt);
+
+        // Melting starting or stopping counts as a change of job, measured against what clients
+        // were last told. It can flip on a tick the throttle below would otherwise pass over, and
+        // when the crucible then sits at a steady temperature no later tick has anything to send.
+        bool stateChanged = work != lastSyncedWork || melting != meltingAsLastSent;
+        lastSyncedWork = work;
         if (!dirty && !stateChanged) return;
 
         // A change of job is worth telling clients about at once. Temperature creeping and a melt
@@ -1219,15 +1244,18 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     {
         if (ChargeEmpty || IsMoltenCrucible(crucible) || !CanSmelt(crucible))
         {
-            if (meltProgress == 0) return false;
+            if (meltProgress == 0 && !melting) return false;
             meltProgress = 0;
+            melting = false;
             return true;
         }
 
         float meltingPoint = crucible.Collectible.GetMeltingPoint(Api.World, chargeProvider, WorkItemSlot);
         float before = meltProgress;
+        bool wasMelting = melting;
 
-        if (meltingPoint > 0 && temp >= meltingPoint)
+        melting = meltingPoint > 0 && temp >= meltingPoint;
+        if (melting)
         {
             meltProgress += GameMath.Clamp((int)(temp / meltingPoint), 1, 30) * dt * CrucibulumModSystem.Config.MeltSpeedMultiplier;
         }
@@ -1244,7 +1272,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
 
         // A crucible sitting below its melting point is the common case; syncing an unchanged
         // number five times a second for every forge in the world is not worth it.
-        return meltProgress != before;
+        return meltProgress != before || melting != wasMelting;
     }
 
     protected bool CanSmelt(ItemStack crucible)
@@ -1263,6 +1291,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         WorkItemStack.Collectible.DoSmelt(Api.World, chargeProvider, WorkItemSlot, outputSlot);
 
         meltProgress = 0;
+        melting = false;
 
         if (outputSlot.Empty) return;
 
@@ -1302,52 +1331,256 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     }
 
     protected static SimpleParticleProperties burstSparks;
-    protected static SimpleParticleProperties idleSparks;
+    protected static SimpleParticleProperties meltSparks;
     protected static SimpleParticleProperties moltenSmoke;
 
     /// <summary>
-    /// A molten crucible smokes. Vanilla already does this for one held in the hand and one sitting
-    /// in ground storage, so a forge that stayed silent would be the odd one out -- and unlike the
-    /// glow, a plume carries across a workshop and does not need the player to be able to see down
-    /// into the mouth.
+    /// A melting charge spits sparks out of the crucible's mouth, and stops once it has all gone
+    /// liquid - from then on it only smokes, which vanilla already does for a molten crucible held
+    /// in the hand or sitting in ground storage. A plume carries across a workshop where the glow
+    /// needs the player to see down into the mouth.
     /// </summary>
-    protected void OnMoltenParticleTick(float dt)
+    protected void OnParticleTick(float dt)
     {
-        // Cheapest checks first: most forges in the world are not holding a molten crucible, and
-        // this runs on every one of them several times a second.
+        // Cheapest checks first: most forges in the world are doing neither, and this runs on every
+        // one of them several times a second.
+        if (melting)
+        {
+            // Eight sparks every ten ticks at the default rate, as a whole number per tick with the
+            // fraction carried by chance, so any rate the config allows comes out on average.
+            float expected = 0.8f * CrucibulumModSystem.Config.MeltSparkRate;
+            int count = (int)expected + (Api.World.Rand.NextDouble() < expected % 1 ? 1 : 0);
+            if (count > 0)
+            {
+                meltSparks ??= BlockSmeltedContainer.bigMetalSparks.Clone(Api.World);
+                meltSparks.MinQuantity = count;
+                meltSparks.AddQuantity = 0;
+                meltSparks.MinPos.Set(Pos.X + 6.5 / 16.0, CrucibleMouthY, Pos.Z + 6.5 / 16.0);
+                meltSparks.AddPos.Set(3 / 16.0, 0.05, 3 / 16.0);
+                meltSparks.MinVelocity.Set(-0.4f, 0.6f, -0.4f);
+                meltSparks.AddVelocity.Set(0.8f, 1.0f, 0.8f);
+                Api.World.SpawnParticles(meltSparks);
+            }
+            return;
+        }
+
         ItemStack crucible = WorkItemStack;
         if (crucible?.Collectible is not BlockSmeltedContainer smelted) return;
 
         var contents = smelted.GetContents(Api.World, crucible);
         if (contents.Key == null || smelted.HasSolidifed(crucible, contents.Key, Api.World)) return;
 
-        double mouthY = Pos.InternalY + 11 / 16.0 + (FuelLevel - 1) / 64.0 + 5 / 16.0;
-
         moltenSmoke ??= BlockSmeltedContainer.smokeHeld.Clone(Api.World);
         moltenSmoke.MinQuantity = 1;
         moltenSmoke.AddQuantity = 0;
-        moltenSmoke.MinPos.Set(Pos.X + 6.5 / 16.0, mouthY, Pos.Z + 6.5 / 16.0);
+        moltenSmoke.MinPos.Set(Pos.X + 6.5 / 16.0, CrucibleMouthY, Pos.Z + 6.5 / 16.0);
         moltenSmoke.AddPos.Set(3 / 16.0, 0.05, 3 / 16.0);
         Api.World.SpawnParticles(moltenSmoke);
+    }
 
-        if (Api.World.Rand.NextDouble() < 0.12)
+    /// <summary>Where the crucible's mouth is, given how far it has sunk into the coal.</summary>
+    protected double CrucibleMouthY => Pos.InternalY + 11 / 16.0 + (FuelLevel - 1) / 64.0 + 5 / 16.0;
+
+    /// <summary>
+    /// The odds that a spark comes down within the next <paramref name="dt"/> seconds of a melt,
+    /// from the configured average gap between them.
+    /// </summary>
+    public static double SparkLandingChance(float dt) =>
+        Math.Min(1, dt / Math.Max(1f, CrucibulumModSystem.Config.SparkLandingSeconds));
+
+    /// <summary>How far from the forge, in blocks, a spark can come down.</summary>
+    public const int SparkReach = 2;
+
+    protected void MaybeLandASpark(float dt)
+    {
+        if (!CrucibulumModSystem.Config.SparksSpreadFire) return;
+
+        Random rand = Api.World.Rand;
+        if (rand.NextDouble() >= SparkLandingChance(dt)) return;
+
+        int dx = rand.Next(-SparkReach, SparkReach + 1);
+        int dz = rand.Next(-SparkReach, SparkReach + 1);
+        if (dx == 0 && dz == 0) return;   // back into the forge
+
+        LandSpark(Pos.AddCopy(dx, rand.Next(-1, 2), dz));
+    }
+
+    /// <summary>
+    /// A spark from this crucible coming down at <paramref name="at"/>. It lights a pile of
+    /// firewood or coal it lands on, or starts a fire in an open space beside something that burns -
+    /// vanilla's own test for where fire can spread, and vanilla's own fire once it has. True if
+    /// anything caught.
+    ///
+    /// The spark is held to the forge's claim boundary (see <see cref="IsWithinForgeClaimBoundary"/>)
+    /// for where it lands and for the fuel it would set burning. Only the spark: a fire it starts is
+    /// ordinary vanilla fire from then on, and spreads as one.
+    /// </summary>
+    protected bool LandSpark(BlockPos at)
+    {
+        if (!CrucibulumModSystem.Config.SparksSpreadFire || !Api.World.Config.GetBool("allowFireSpread")) return false;
+        if (!IsWithinForgeClaimBoundary(at) || !SparkCanReach(at)) return false;
+
+        IBlockAccessor ba = Api.World.BlockAccessor;
+        BlockEntity atBe = ba.GetBlockEntity(at);
+
+        // Lit where they lie, as vanilla's fire lights them: a coal pile is not open space, so the
+        // fire-beside-fuel test below would never reach one.
+        switch (atBe)
         {
-            idleSparks ??= BlockSmeltedContainer.bigMetalSparks.Clone(Api.World);
-            idleSparks.MinQuantity = 1;
-            idleSparks.AddQuantity = 1;
-            idleSparks.MinPos.Set(Pos.X + 6.5 / 16.0, mouthY, Pos.Z + 6.5 / 16.0);
-            idleSparks.AddPos.Set(3 / 16.0, 0.05, 3 / 16.0);
-            idleSparks.MinVelocity.Set(-0.2f, 0.5f, -0.2f);
-            idleSparks.AddVelocity.Set(0.4f, 0.8f, 0.4f);
-            Api.World.SpawnParticles(idleSparks);
+            case BlockEntityCoalPile coal:
+                if (coal.IsBurning || !coal.CanIgnite) return false;
+                coal.TryIgnite();
+                Api.World.Logger.Audit("A spark from the crucible at {0} lit the coal pile at {1}.", Pos, at);
+                return true;
+
+            case BlockEntityGroundStorage pile:
+                if (pile.IsBurning || !pile.CanIgnite) return false;
+                pile.TryIgnite();
+                Api.World.Logger.Audit("A spark from the crucible at {0} lit the pile at {1}.", Pos, at);
+                return true;
         }
+
+        if (ba.GetBlock(at).Replaceable < 6000 || ba.GetBlock(at, BlockLayersAccess.Fluid).Id != 0) return false;
+        if (atBe?.GetBehavior<BEBehaviorBurning>()?.IsBurning == true) return false;
+
+        var reinforcement = Api.ModLoader.GetModSystem<ModSystemBlockReinforcement>();
+        BlockPos fuelPos = null;
+        foreach (BlockFacing facing in BlockFacing.ALLFACES)
+        {
+            BlockPos npos = at.AddCopy(facing);
+            if (!Burns(npos) || reinforcement?.IsReinforced(npos) == true) continue;
+            if (!IsWithinForgeClaimBoundary(npos)) continue;
+            if (ba.GetBlockEntity(npos)?.GetBehavior<BEBehaviorBurning>() != null) continue;
+            fuelPos = npos;
+            break;
+        }
+        if (fuelPos == null) return false;
+
+        Block fire = Api.World.GetBlock(new AssetLocation("fire"));
+        if (fire == null) return false;
+
+        ba.SetBlock(fire.BlockId, at);
+        ba.GetBlockEntity(at)?.GetBehavior<BEBehaviorBurning>()?.OnFirePlaced(at, fuelPos, null);
+        Api.World.Logger.Audit("A spark from the crucible at {0} started a fire at {1}.", Pos, at);
+        return true;
+    }
+
+    /// <summary>
+    /// The same question BEBehaviorBurning asks of a block before it will burn it, in the same order:
+    /// a block's combustible properties decide if it has any, and only a block without them is asked
+    /// as an ICombustible.
+    /// </summary>
+    protected bool Burns(BlockPos pos)
+    {
+        Block block = Api.World.BlockAccessor.GetBlock(pos);
+        CombustibleProperties props = block.GetCombustibleProperties(Api.World, null, pos);
+        if (props != null) return props.BurnDuration > 0;
+        return block.GetInterface<ICombustible>(Api.World, pos)?.GetBurnDuration(Api.World, pos) > 0;
+    }
+
+    /// <summary>
+    /// Whether a spark could fly from the crucible's mouth to <paramref name="at"/>: the straight
+    /// line between them passes through no block's collision boxes. A straight line rather than the
+    /// arc a spark falling to a spot below the mouth would really follow, so a wall too low to be in
+    /// the way of the arc can still stop one - erring the way that lets a stone enclosure fireproof a
+    /// forge.
+    ///
+    /// Every cell the line crosses is checked, the one the mouth itself sits in included, so a block
+    /// set right on top of the forge stops it too. Only the forge and the landing spot are left out.
+    /// </summary>
+    protected bool SparkCanReach(BlockPos at)
+    {
+        IBlockAccessor ba = Api.World.BlockAccessor;
+        Vec3d from = new(Pos.X + 0.5, Pos.Y + (CrucibleMouthY - Pos.InternalY), Pos.Z + 0.5);
+        Vec3d to = new(at.X + 0.5, at.Y + 0.5, at.Z + 0.5);
+        Vec3d dir = to - from;
+
+        // Walk the cells the segment crosses in order, stepping across whichever cell face it
+        // reaches first (Amanatides and Woo).
+        int x = (int)Math.Floor(from.X), y = (int)Math.Floor(from.Y), z = (int)Math.Floor(from.Z);
+        int stepX = Math.Sign(dir.X), stepY = Math.Sign(dir.Y), stepZ = Math.Sign(dir.Z);
+        double tMaxX = FirstCrossing(from.X, dir.X, x), tMaxY = FirstCrossing(from.Y, dir.Y, y), tMaxZ = FirstCrossing(from.Z, dir.Z, z);
+        double tDeltaX = dir.X == 0 ? double.PositiveInfinity : Math.Abs(1 / dir.X);
+        double tDeltaY = dir.Y == 0 ? double.PositiveInfinity : Math.Abs(1 / dir.Y);
+        double tDeltaZ = dir.Z == 0 ? double.PositiveInfinity : Math.Abs(1 / dir.Z);
+
+        BlockPos cell = new(Pos.dimension);
+        while (true)
+        {
+            cell.Set(x, y, z);
+            if (cell.Equals(at)) return true;
+            if (!cell.Equals(Pos) && SegmentHitsBlock(ba, cell, from, dir)) return false;
+
+            if (tMaxX <= tMaxY && tMaxX <= tMaxZ) { if (tMaxX > 1) return true; x += stepX; tMaxX += tDeltaX; }
+            else if (tMaxY <= tMaxZ) { if (tMaxY > 1) return true; y += stepY; tMaxY += tDeltaY; }
+            else { if (tMaxZ > 1) return true; z += stepZ; tMaxZ += tDeltaZ; }
+        }
+    }
+
+    /// <summary>The fraction of the way along a segment at which it first leaves cell <paramref name="cell"/> on one axis.</summary>
+    private static double FirstCrossing(double origin, double delta, int cell)
+    {
+        if (delta == 0) return double.PositiveInfinity;
+        double boundary = delta > 0 ? cell + 1 : cell;
+        return (boundary - origin) / delta;
+    }
+
+    /// <summary>
+    /// Whether the segment from <paramref name="from"/> along <paramref name="dir"/> passes through
+    /// any of the collision boxes of the block in <paramref name="cell"/>. Merely touching a face
+    /// does not count.
+    /// </summary>
+    private static bool SegmentHitsBlock(IBlockAccessor ba, BlockPos cell, Vec3d from, Vec3d dir)
+    {
+        Cuboidf[] boxes = ba.GetBlock(cell).GetCollisionBoxes(ba, cell);
+        if (boxes == null) return false;
+
+        foreach (Cuboidf box in boxes)
+        {
+            double enter = 0, leave = 1;
+            if (!Slab(from.X, dir.X, cell.X + box.X1, cell.X + box.X2, ref enter, ref leave)) continue;
+            if (!Slab(from.Y, dir.Y, cell.Y + box.Y1, cell.Y + box.Y2, ref enter, ref leave)) continue;
+            if (!Slab(from.Z, dir.Z, cell.Z + box.Z1, cell.Z + box.Z2, ref enter, ref leave)) continue;
+            if (enter < leave) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Narrows [enter, leave] to where the segment lies between min and max on one axis.</summary>
+    private static bool Slab(double origin, double delta, double min, double max, ref double enter, ref double leave)
+    {
+        if (delta == 0) return origin > min && origin < max;
+
+        double t1 = (min - origin) / delta, t2 = (max - origin) / delta;
+        if (t1 > t2) (t1, t2) = (t2, t1);
+        enter = Math.Max(enter, t1);
+        leave = Math.Min(leave, t2);
+        return enter < leave;
+    }
+
+    /// <summary>
+    /// The land a spark from this forge may touch. Unclaimed land always; claimed land only where
+    /// every claim covering it also covers the forge. It is the claims themselves that are compared,
+    /// not their owners: a neighbouring claim belonging to the same player is still somewhere else.
+    /// A spark has no player behind it to check permissions against, so this is the whole test.
+    /// </summary>
+    protected bool IsWithinForgeClaimBoundary(BlockPos pos)
+    {
+        LandClaim[] there = Api.World.Claims.Get(pos);
+        if (there == null || there.Length == 0) return true;
+
+        LandClaim[] here = Api.World.Claims.Get(Pos) ?? Array.Empty<LandClaim>();
+        return there.All(claim => here.Contains(claim));
     }
 
     protected void SpawnReadySparks()
     {
+        float scale = CrucibulumModSystem.Config.MeltDoneSparkBurst;
+        if (scale <= 0) return;
+
         SimpleParticleProperties sparks = burstSparks ??= BlockSmeltedContainer.bigMetalSparks.Clone(Api.World);
-        sparks.MinQuantity = 12;
-        sparks.AddQuantity = 8;
+        sparks.MinQuantity = 12 * scale;
+        sparks.AddQuantity = 8 * scale;
         sparks.MinPos.Set(Pos.X + 6.5 / 16.0, Pos.InternalY + 1.0, Pos.Z + 6.5 / 16.0);
         sparks.AddPos.Set(3 / 16.0, 0.05, 3 / 16.0);
         sparks.MinVelocity.Set(-0.5f, 0.6f, -0.5f);
@@ -1626,6 +1859,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         RemeshChiselledCoverIfChanged(coverWas);
 
         meltProgress = tree.GetFloat("meltProgress");
+        melting = tree.GetBool("melting");
         GatePosition = (GatePosition)tree.GetInt("gatePosition");
         GateStack = tree.GetItemstack("gateStack");
         GateStack?.ResolveBlockOrItem(worldForResolving);
@@ -1642,6 +1876,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         base.ToTreeAttributes(tree);
 
         tree.SetFloat("meltProgress", meltProgress);
+        tree.SetBool("melting", melting);
         tree.SetInt("gatePosition", (int)GatePosition);
         if (GateStack != null) tree.SetItemstack("gateStack", GateStack);
     }
