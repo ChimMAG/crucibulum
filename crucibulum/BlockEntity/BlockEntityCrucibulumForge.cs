@@ -1399,6 +1399,25 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     /// </summary>
     public const int CycleGatePacketId = 1701;
 
+    /// <summary>The client asking for the whole tree again, after it had to ignore one.</summary>
+    public const int RefreshPacketId = 1702;
+
+    private long refreshListenerId;
+
+    /// <summary>
+    /// Asks only once the pause has lifted, because that is when the slot packets it held back have
+    /// been applied. The tree that answers was written after all of them, so it can only be newer;
+    /// replaying the ignored tree instead would put an older state over those packets.
+    /// </summary>
+    private void AskForATreeOnceUnpaused(float dt)
+    {
+        if (Inventory.InvNetworkUtil.PauseInventoryUpdates) return;
+
+        UnregisterGameTickListener(refreshListenerId);
+        refreshListenerId = 0;
+        ((ICoreClientAPI)Api).Network.SendBlockEntityPacket(Pos, RefreshPacketId, null);
+    }
+
     public override void OnReceivedClientPacket(IPlayer player, int packetid, byte[] data)
     {
         if (packetid == (int)EnumBlockEntityPacketId.Close)
@@ -1419,6 +1438,12 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         if (packetid == CycleGatePacketId)
         {
             TryCycleGate(player);
+            return;
+        }
+
+        if (packetid == RefreshPacketId)
+        {
+            MarkDirty();
             return;
         }
 
@@ -1579,7 +1604,24 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
     {
         ItemStack coverWas = ChiselledCoverStack();
 
+        // A slot grid pauses inventory updates while the player sweeps a stack across it, because
+        // it is moving stacks ahead of the server and an update from behind would undo them. This
+        // tree carries the inventory too - and is sent after every slot packet - so its inventory
+        // is ignored for the same stretch, and the client keeps what it has predicted. Ignored, not
+        // queued: the pause queues slot packets only, so this tree's contents are simply gone, and
+        // anything only it carried - a melt emptying the charge raises no slot packet - would be
+        // missing for good. So once the pause lifts, the server is asked for a fresh one.
+        ItemStack[] predicted = Api?.Side == EnumAppSide.Client && Inventory.InvNetworkUtil.PauseInventoryUpdates
+            ? Inventory.Select(slot => slot.Itemstack).ToArray()
+            : null;
+
         base.FromTreeAttributes(tree, worldForResolving);
+
+        if (predicted != null)
+        {
+            for (int i = 0; i < predicted.Length; i++) Inventory[i].Itemstack = predicted[i];
+            if (refreshListenerId == 0) refreshListenerId = RegisterGameTickListener(AskForATreeOnceUnpaused, 50);
+        }
 
         RemeshChiselledCoverIfChanged(coverWas);
 

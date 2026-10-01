@@ -38,6 +38,10 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
     private string currentGate = "";
     private bool composedWithGate;
     private bool sawCrucible;
+    private bool leftHeld;
+    private bool rightHeld;
+    private bool relayoutWanted;
+    private bool relayoutQueued;
 
     private ElementBounds chargeSlotBounds;
     private ElementBounds meltBarBounds;
@@ -89,6 +93,7 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
     public override void OnRenderGUI(float deltaTime)
     {
         base.OnRenderGUI(deltaTime);
+        if (relayoutWanted && !MouseButtonHeld) RequestRelayout();
         CloseIfTheCrucibleHasGone();
     }
 
@@ -103,10 +108,42 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
         return true;
     }
 
-    private void OnInventorySlotModified(int slotid)
+    /// <summary>
+    /// Any left or right button held, anywhere - deliberately broader than "dragging over this
+    /// window's slots". A held button may be a sweep, and vanilla's slot grid keeps that sweep's
+    /// state in the grid element itself, so laying the window out again would replace the grid and
+    /// drop the rest of the sweep; a relayout waits for the release instead. No check of the cursor:
+    /// a left sweep drops the whole stack into the first slot and shares it back out from there. The
+    /// API's mouse events rather than the dialog's, because they see a release over another window.
+    /// </summary>
+    private bool MouseButtonHeld => leftHeld || rightHeld;
+
+    private void OnMouseButtonDown(MouseEvent e) => SetHeld(e.Button, true);
+    private void OnMouseButtonUp(MouseEvent e) => SetHeld(e.Button, false);
+
+    private void SetHeld(EnumMouseButton button, bool held)
     {
-        // Recomposing from inside the slot-modified callback throws; queue it instead.
-        capi.Event.EnqueueMainThreadTask(SetupDialog, "setupcrucibleforgedlg");
+        if (button == EnumMouseButton.Left) leftHeld = held;
+        if (button == EnumMouseButton.Right) rightHeld = held;
+    }
+
+    private void RequestRelayout()
+    {
+        relayoutWanted = true;
+        if (MouseButtonHeld || relayoutQueued) return;
+
+        relayoutQueued = true;
+        capi.Event.EnqueueMainThreadTask(() =>
+        {
+            relayoutQueued = false;
+
+            // Asked again when it runs, because a press can land between queueing this and the
+            // frame that runs it. If one has, it stays wanted and goes on the release.
+            if (!IsOpened() || !relayoutWanted || MouseButtonHeld) return;
+
+            relayoutWanted = false;
+            SetupDialog();
+        }, "setupcrucibleforgedlg");
     }
 
     private void SetupDialog()
@@ -251,7 +288,7 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
             currentStatus = status;
             wasMelting = melting;
             currentGate = gate;
-            capi.Event.EnqueueMainThreadTask(SetupDialog, "setupcrucibleforgedlg");
+            RequestRelayout();
             return;
         }
 
@@ -307,7 +344,10 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
         base.OnGuiOpened();
         closing = false;
         sawCrucible = false;
-        Inventory.SlotModified += OnInventorySlotModified;
+        leftHeld = rightHeld = false;
+        relayoutWanted = relayoutQueued = false;
+        capi.Event.MouseDown += OnMouseButtonDown;
+        capi.Event.MouseUp += OnMouseButtonUp;
 
         screenPos = GetFreePos("smallblockgui");
         OccupyPos("smallblockgui", screenPos);
@@ -316,7 +356,8 @@ public class GuiDialogCrucibleForge : GuiDialogBlockEntity
 
     public override void OnGuiClosed()
     {
-        Inventory.SlotModified -= OnInventorySlotModified;
+        capi.Event.MouseDown -= OnMouseButtonDown;
+        capi.Event.MouseUp -= OnMouseButtonUp;
 
         SingleComposer.GetSlotGrid("chargeSlots")?.OnGuiClosed(capi);
         SingleComposer.GetSlotGrid("crucibleSlot")?.OnGuiClosed(capi);

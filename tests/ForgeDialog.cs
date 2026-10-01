@@ -1,9 +1,12 @@
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using Crucibulum;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Datastructures;
 using Vintagestory.API.MathTools;
+using Vintagestory.Client.NoObf;
 using VsTestkit.Testing;
 using static VsTestkit.Testing.Vs;
 
@@ -242,6 +245,258 @@ namespace Crucibulum.Tests
 
             await Input.Press(GlKeys.Escape);
             await Gui.WaitGone<GuiDialogCrucibleForge>(120);
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task DraggingAcrossTheChargeSlotsSharesTheStackOut()
+        {
+            // Vanilla's left-drag: press with a stack on the cursor, sweep it over several slots,
+            // and it is split evenly between them. Players use it to set an alloy's ratio, so the
+            // charge row has to do it the way every other slot grid does.
+            //
+            // The first slot of the sweep changes the blend, the server says so, and that asks the
+            // window to lay itself out again - which, done mid-sweep, would end the sweep there.
+            // So this holds the button until that word has actually come back, then finishes the
+            // sweep, and then checks the window did catch up once the button was let go.
+            var sweep = await Sweep.Begin(8);
+            await OnClient();
+            try
+            {
+                string before = sweep.Status;
+
+                await sweep.PointAt(0);
+                sweep.Press(EnumMouseButton.Left);
+                await FramesUntil(() => sweep.Status != before, 600,
+                    () => "the server to report the new blend while the button is still held");
+
+                for (int i = 1; i < BlockEntityCrucibulumForge.ChargeSlotCount; i++) await sweep.PointAt(i);
+                sweep.Release();
+
+                await FramesUntil(() => sweep.DisplayedStatus == sweep.Status, 120,
+                    () => $"the window to show \"{sweep.Status}\" once the button was released; it shows \"{sweep.DisplayedStatus}\"");
+
+                await sweep.ExpectOnServer(new[] { 2, 2, 2, 2 }, onCursor: 0);
+            }
+            finally
+            {
+                await sweep.End();
+            }
+        }
+
+        // The server's word on the blend can arrive in the same frame as the press: the window
+        // queues its relayout, the press lands, and the queued relayout runs a frame later with the
+        // button down. Real timing only hits that now and then, so these set the status on the
+        // client's own copy of the tree - which is what a server update does on arrival - and press
+        // in the same breath, before the queue is run.
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public Task ALayoutQueuedAsALeftSweepStartsWaitsForTheRelease() =>
+            SweepWithALayoutAlreadyQueued(EnumMouseButton.Left, new[] { 2, 2, 2, 2 }, onCursor: 0);
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public Task ALayoutQueuedAsARightSweepStartsWaitsForTheRelease() =>
+            // Right-sweeping drops one into each slot crossed, and keeps its state in the grid too.
+            SweepWithALayoutAlreadyQueued(EnumMouseButton.Right, new[] { 1, 1, 1, 1 }, onCursor: 4);
+
+        static async Task SweepWithALayoutAlreadyQueued(EnumMouseButton button, int[] expected, int onCursor)
+        {
+            var sweep = await Sweep.Begin(8);
+            await OnClient();
+            try
+            {
+                await sweep.PointAt(0);
+                sweep.Dlg.Attributes.SetString("statusText", "a blend the server has just reported");
+                sweep.Press(button);
+
+                for (int i = 1; i < BlockEntityCrucibulumForge.ChargeSlotCount; i++) await sweep.PointAt(i);
+                sweep.Release();
+
+                await sweep.ExpectOnServer(expected, onCursor);
+            }
+            finally
+            {
+                await sweep.End();
+            }
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task ASyncFromBehindTheSweepDoesNotUndoIt()
+        {
+            // The forge sends its whole tree, inventory and all, after every slot packet, and a
+            // sweep moves stacks on the client ahead of the server. A sync describing the slots as
+            // they were a step or two back used to land mid-sweep and put them back, and the rest
+            // of the sweep then shared out stacks that were no longer there - the last slot came up
+            // empty about half the time. Here the stale tree is handed over directly, so it lands
+            // mid-sweep every time rather than when the timing happens to line up.
+            var sweep = await Sweep.Begin(8);
+            await OnClient();
+            try
+            {
+                var clientBe = (BlockEntityCrucibulumForge)Capi.World.BlockAccessor.GetBlockEntity(ForgePos);
+                var fromBefore = new TreeAttribute();
+                clientBe.ToTreeAttributes(fromBefore);
+
+                await sweep.PointAt(0);
+                sweep.Press(EnumMouseButton.Left);
+                await sweep.PointAt(1);
+
+                clientBe.FromTreeAttributes(fromBefore, Capi.World);
+                Assert.Equal("4,4,0,0", sweep.ClientCharge(), "what the client shows mid-sweep, after a sync from before it began");
+
+                sweep.Release();
+                await sweep.ExpectOnServer(new[] { 4, 4, 0, 0 }, onCursor: 0);
+                await FramesUntil(() => sweep.ClientCharge() == "4,4,0,0", 120,
+                    () => $"the client to agree with the server after the release; it shows {sweep.ClientCharge()}");
+            }
+            finally
+            {
+                await sweep.End();
+            }
+        }
+
+        /// <summary>
+        /// <see cref="Until"/> on rendered frames rather than ticks, for what the window has to draw.
+        /// The message is built on failure, so it can say what was there instead.
+        /// </summary>
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task AMeltMidSweepLeavesNoGhostOreOnTheClient()
+        {
+            // The client ignores the forge's tree while a sweep is under way, and a melt is the one
+            // change only the tree carries: it empties the charge slots directly, with no slot packet
+            // of its own. The molten crucible comes back on the release, through the slot packets
+            // the pause held; the empty charge has to come from a fresh tree, asked for once the
+            // pause lifts. Without it the ore stays on the client, sitting beside a molten crucible.
+            var sweep = await Sweep.Begin(8);
+            await OnClient();
+            try
+            {
+                await sweep.PointAt(0);
+                sweep.Press(EnumMouseButton.Left);
+                await sweep.PointAt(1);
+
+                await OnServer();
+                typeof(BlockEntityCrucibulumForge)
+                    .GetMethod("DoSmelt", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Invoke(Forge, null);
+                Assert.True(BlockEntityCrucibulumForge.IsMoltenCrucible(Forge.WorkItemStack), "the melt happened on the server");
+                Assert.True(Forge.ChargeEmpty, "and took the charge");
+                await Ticks(5);
+
+                await OnClient();
+                sweep.Release();
+
+                var clientBe = (BlockEntityCrucibulumForge)Capi.World.BlockAccessor.GetBlockEntity(ForgePos);
+                await FramesUntil(() => sweep.ClientCharge() == "0,0,0,0" && BlockEntityCrucibulumForge.IsMoltenCrucible(clientBe.WorkItemStack), 120,
+                    () => $"the client to show the melt: charge {sweep.ClientCharge()}, crucible {clientBe.WorkItemStack?.Collectible.Code}");
+            }
+            finally
+            {
+                await sweep.End();
+            }
+        }
+
+        static async Task FramesUntil(System.Func<bool> condition, int maxFrames, System.Func<string> what)
+        {
+            for (int i = 0; i < maxFrames && !condition(); i++) await Frames.Wait(1);
+            Assert.True(condition(), $"within {maxFrames} frames: {what()}");
+        }
+
+        /// <summary>
+        /// A crucible window with copper on the cursor, and a hand to sweep it across the charge row
+        /// through the game's own mouse entry point. Use it from the client thread: a slot click plays
+        /// a sound, which refuses to anywhere else, and an await only switches the thread of the
+        /// method that makes it - so the test itself has to be over there, not just this.
+        /// </summary>
+        sealed class Sweep
+        {
+            public GuiDialogCrucibleForge Dlg;
+            ClientMain game;
+            EnumMouseButton? held;
+
+            public string Status => Dlg.Attributes.GetString("statusText", "");
+            public string ClientCharge() => string.Join(",", Enumerable.Range(0, BlockEntityCrucibulumForge.ChargeSlotCount)
+                .Select(i => Dlg.Inventory[BlockEntityCrucibulumForge.FirstChargeSlot + i].StackSize));
+            public string DisplayedStatus => Dlg.SingleComposer.GetDynamicText("statusText")?.GetText() ?? "";
+
+            public static async Task<Sweep> Begin(int nuggets)
+            {
+                var be = await EmptyHandedAtAForge();
+                be.WorkItemSlot.Itemstack = World.Stack("game:crucible-brown-fired");
+                be.MarkDirty(true);
+                await Ticks(2);
+
+                await Interact.UseBlock(ForgePos, BlockFacing.UP);
+                var dlg = await Gui.WaitFor<GuiDialogCrucibleForge>(120);
+
+                // On both sides, as in DraggingOreIntoTheWindowReachesTheServer.
+                await OnServer();
+                Player.Me.InventoryManager.MouseItemSlot.Itemstack = World.Stack("game:nugget-nativecopper", nuggets);
+                Player.Me.InventoryManager.MouseItemSlot.MarkDirty();
+                await Ticks(2);
+
+                await OnClient();
+                var mouse = Capi.World.Player.InventoryManager.MouseItemSlot;
+                mouse.Itemstack = new ItemStack(Capi.World.GetItem(new AssetLocation("game:nugget-nativecopper")), nuggets);
+                mouse.MarkDirty();
+                await Frames.Wait(3);
+
+                return new Sweep { Dlg = dlg, game = (ClientMain)Capi.World };
+            }
+
+            /// <summary>
+            /// Moves the cursor over a charge slot. Both layers have to be told: a press is made at
+            /// the platform's idea of the cursor, which Input.MouseMove does not touch, so without
+            /// this the press lands wherever the real pointer happens to sit.
+            /// </summary>
+            public async Task PointAt(int slot)
+            {
+                var b = Dlg.SingleComposer.GetSlotGrid("chargeSlots").SlotBounds[slot];
+                int x = (int)(b.absX + b.OuterWidth / 2), y = (int)(b.absY + b.OuterHeight / 2);
+
+                game.Platform.GetType()
+                    .GetMethod("SetMousePosition", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Invoke(game.Platform, new object[] { (float)x, (float)y });
+                game.OnMouseMove(new MouseEvent(x, y));
+                await Frames.Wait(5);
+            }
+
+            /// <summary>Synchronous, so a caller can press inside the frame it is already in.</summary>
+            public void Press(EnumMouseButton button)
+            {
+                held = button;
+                game.UpdateMouseButtonState(button, true);
+            }
+
+            public void Release()
+            {
+                if (held is not EnumMouseButton button) return;
+                held = null;
+                game.UpdateMouseButtonState(button, false);
+            }
+
+            public async Task ExpectOnServer(int[] expected, int onCursor)
+            {
+                await OnServer();
+                try
+                {
+                    await Until(() => Forge.ChargeSlots.Select(s => s.StackSize).SequenceEqual(expected), 120,
+                        $"the charge slots to hold {string.Join(",", expected)}");
+                }
+                finally
+                {
+                    Log($"  charge slots hold {string.Join(",", Forge.ChargeSlots.Select(s => s.StackSize))}, cursor {Player.Me.InventoryManager.MouseItemSlot.StackSize}");
+                }
+                Assert.Equal(onCursor, Player.Me.InventoryManager.MouseItemSlot.StackSize, "left on the cursor");
+            }
+
+            /// <summary>Lets go of the button and shuts the window, whatever state a failure left them in.</summary>
+            public async Task End()
+            {
+                await OnClient();
+                Release();
+                Dlg.TryClose();
+                await Gui.WaitGone<GuiDialogCrucibleForge>(120);
+            }
         }
 
         [VsTest]
