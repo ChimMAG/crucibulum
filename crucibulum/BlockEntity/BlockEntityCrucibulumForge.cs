@@ -1346,21 +1346,7 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         // one of them several times a second.
         if (melting)
         {
-            // Eight sparks every ten ticks at the default rate, as a whole number per tick with the
-            // fraction carried by chance, so any rate the config allows comes out on average.
-            float expected = 0.8f * CrucibulumModSystem.Config.MeltSparkRate;
-            int count = (int)expected + (Api.World.Rand.NextDouble() < expected % 1 ? 1 : 0);
-            if (count > 0)
-            {
-                meltSparks ??= BlockSmeltedContainer.bigMetalSparks.Clone(Api.World);
-                meltSparks.MinQuantity = count;
-                meltSparks.AddQuantity = 0;
-                meltSparks.MinPos.Set(Pos.X + 6.5 / 16.0, CrucibleMouthY, Pos.Z + 6.5 / 16.0);
-                meltSparks.AddPos.Set(3 / 16.0, 0.05, 3 / 16.0);
-                meltSparks.MinVelocity.Set(-0.4f, 0.6f, -0.4f);
-                meltSparks.AddVelocity.Set(0.8f, 1.0f, 0.8f);
-                Api.World.SpawnParticles(meltSparks);
-            }
+            SpawnMeltSparks();
             return;
         }
 
@@ -1376,6 +1362,72 @@ public class BlockEntityCrucibulumForge : BlockEntityForge
         moltenSmoke.MinPos.Set(Pos.X + 6.5 / 16.0, CrucibleMouthY, Pos.Z + 6.5 / 16.0);
         moltenSmoke.AddPos.Set(3 / 16.0, 0.05, 3 / 16.0);
         Api.World.SpawnParticles(moltenSmoke);
+    }
+
+    /// <summary>
+    /// How far through its melt the charge is, 0 just begun to 1 about to go liquid. From what the
+    /// client was last told of the progress, against the duration it works out from the charge it
+    /// can see - both of which it has.
+    /// </summary>
+    protected float MeltStage()
+    {
+        ItemStack crucible = CrucibleStack;
+        if (crucible == null) return 0;
+
+        float duration = crucible.Collectible.GetMeltingDuration(Api.World, chargeProvider, WorkItemSlot);
+        return duration > 0 ? GameMath.Clamp(meltProgress / duration, 0, 1) : 0;
+    }
+
+    /// <summary>
+    /// Sparks per particle tick at a given stage of the melt, before <see cref="CrucibulumConfig.MeltSparkRate"/>:
+    /// one a tick as it starts, building to four as it nears liquid - about seven a second up to
+    /// twenty-five.
+    /// </summary>
+    public static float MeltSparksPerTick(float stage) => 1f + 3f * GameMath.Clamp(stage, 0, 1);
+
+    /// <summary>
+    /// How hard the sparks are thrown at a given stage, as a share of a pour's: a third of it as the
+    /// melt starts, all of it by the end.
+    /// </summary>
+    public static float MeltSparkVigour(float stage) => 0.35f + 0.65f * GameMath.Clamp(stage, 0, 1);
+
+    /// <summary>
+    /// The sparks a melting charge throws, after the ones vanilla throws when a crucible is poured
+    /// into a mold: the same template, thrown up and out of the mouth as a pour throws them out of
+    /// the mold, glowing as hot as the metal is. They build as the melt goes on - more of them, and
+    /// thrown harder - so a melt nearly done looks it.
+    ///
+    /// Every property is set here rather than taken from the clone, because vanilla changes its
+    /// copy of the template as it goes (a held crucible makes its sparks three times the size) and
+    /// the clone is taken from whatever state it was last left in.
+    /// </summary>
+    protected void SpawnMeltSparks()
+    {
+        float stage = MeltStage();
+
+        // A whole number per tick with the fraction carried by chance, so any rate the config
+        // allows comes out right on average.
+        float expected = MeltSparksPerTick(stage) * CrucibulumModSystem.Config.MeltSparkRate;
+        int count = (int)expected + (Api.World.Rand.NextDouble() < expected % 1 ? 1 : 0);
+        if (count <= 0) return;
+
+        float vigour = MeltSparkVigour(stage);
+        ItemStack crucible = WorkItemStack;
+        float temp = crucible == null ? 0 : crucible.Collectible.GetTemperature(Api.World, crucible);
+
+        SimpleParticleProperties sparks = meltSparks ??= BlockSmeltedContainer.bigMetalSparks.Clone(Api.World);
+        sparks.MinQuantity = count;
+        sparks.AddQuantity = 0;
+        sparks.MinPos.Set(Pos.X + 5 / 16.0, CrucibleMouthY, Pos.Z + 5 / 16.0);
+        sparks.AddPos.Set(6 / 16.0, 0.05, 6 / 16.0);
+        sparks.MinVelocity.Set(-2f * vigour, 1f + vigour, -2f * vigour);
+        sparks.AddVelocity.Set(4f * vigour, 5f * vigour, 4f * vigour);
+        sparks.MinSize = sparks.MaxSize = 0.25f;
+        sparks.LifeLength = 0.5f;
+        sparks.GravityEffect = 1f;
+        sparks.Bounciness = 0.3f;
+        sparks.VertexFlags = (byte)GameMath.Clamp((int)temp - 770, 48, 128);   // as a pour glows
+        Api.World.SpawnParticles(sparks);
     }
 
     /// <summary>Where the crucible's mouth is, given how far it has sunk into the coal.</summary>

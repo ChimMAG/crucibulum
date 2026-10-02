@@ -425,20 +425,58 @@ namespace Crucibulum.Tests
             BlockEntityCrucibulumForge ClientForge() => (BlockEntityCrucibulumForge)Capi.World.BlockAccessor.GetBlockEntity(ForgePos);
             await Until(() => ClientForge()?.IsMelting == true, 40, "the client to hear the charge is melting");
 
-            // Five times the default's 0.8 a tick is four, every tick, with nothing left to chance.
+            // At 5, between five a tick as a melt starts and twenty as it ends - every tick, with
+            // nothing below the whole number left to chance.
             CrucibulumModSystem.Config.MeltSparkRate = 5;
             particles.Clear();
             await Ticks(20);
             var thrown = particles.Sparks(onServer: false);
             Assert.Greater(thrown.Count, 0, "sparks at 5");
-            Assert.True(thrown.All(t => t.MinQuantity == 4 && t.AddQuantity == 0),
-                "four at a time at 5: " + string.Join(", ", thrown.Select(t => $"{t.MinQuantity}+{t.AddQuantity}")));
+            Assert.True(thrown.All(t => t.MinQuantity >= 5 && t.MinQuantity <= 21 && t.AddQuantity == 0),
+                "five to twenty at a time at 5: " + string.Join(", ", thrown.Select(t => $"{t.MinQuantity}+{t.AddQuantity}")));
 
             CrucibulumModSystem.Config.MeltSparkRate = 0;
             particles.Clear();
             await Ticks(40);
             Assert.True(ClientForge().IsMelting, "still melting");
             Assert.Equal(0, particles.Sparks(onServer: false).Count, "none at 0");
+        }
+
+        [VsTest]
+        public async Task TheSparksBuildFromATrickleToAPour()
+        {
+            Assert.Close(BlockEntityCrucibulumForge.MeltSparksPerTick(0), 1, 1e-6, "one a tick as a melt starts");
+            Assert.Close(BlockEntityCrucibulumForge.MeltSparksPerTick(1), 4, 1e-6, "four as it nears liquid");
+            Assert.Close(BlockEntityCrucibulumForge.MeltSparkVigour(0), 0.35, 1e-6, "thrown at a third of a pour's force to start");
+            Assert.Close(BlockEntityCrucibulumForge.MeltSparkVigour(1), 1, 1e-6, "and as hard as a pour by the end");
+            Assert.Close(BlockEntityCrucibulumForge.MeltSparksPerTick(7), 4, 1e-6, "held at the end past it");
+            await Task.CompletedTask;
+        }
+
+        [VsTest(TimeoutMs = 120000), RequiresClient]
+        public async Task ALateMeltThrowsMoreAndHarderThanAnEarlyOne()
+        {
+            // Eight nuggets is twelve seconds of melt: long enough to compare its first quarter with
+            // its last over plenty of ticks, so the chance in each tick's count averages out.
+            await MeltingForge(copper: 8);
+            using var particles = new ParticleWatch(ForgePos);
+
+            await OnClient();
+            BlockEntityCrucibulumForge ClientForge() => (BlockEntityCrucibulumForge)Capi.World.BlockAccessor.GetBlockEntity(ForgePos);
+            await Until(() => BlockEntityCrucibulumForge.IsMoltenCrucible(ClientForge()?.WorkItemStack), 900, "the client to see it molten");
+
+            var thrown = particles.Sparks(onServer: false);
+            int quarter = thrown.Count / 4;
+            Assert.Greater(quarter, 5, $"enough of a melt to compare ({thrown.Count} throws)");
+
+            var early = thrown.Take(quarter).ToList();
+            var late = thrown.Skip(thrown.Count - quarter).ToList();
+            double earlyCount = early.Average(t => t.MinQuantity), lateCount = late.Average(t => t.MinQuantity);
+            double earlyLift = early.Average(t => t.AddVelocityY), lateLift = late.Average(t => t.AddVelocityY);
+            Log($"  first quarter: {earlyCount:0.00} a throw, lift {earlyLift:0.00}; last: {lateCount:0.00}, lift {lateLift:0.00}");
+
+            Assert.Greater(lateCount, earlyCount + 1, "more sparks a throw near the end");
+            Assert.Greater(lateLift, earlyLift * 1.5, "thrown harder near the end");
         }
 
         [VsTest(TimeoutMs = 90000), RequiresClient]
@@ -490,7 +528,7 @@ namespace Crucibulum.Tests
         /// </summary>
         sealed class ParticleWatch : IDisposable
         {
-            public sealed record Spawn(bool OnServer, bool IsSpark, float MinQuantity, float AddQuantity);
+            public sealed record Spawn(bool OnServer, bool IsSpark, float MinQuantity, float AddQuantity, float AddVelocityY);
 
             static readonly object gate = new();
             static readonly List<Spawn> seen = new();
@@ -518,7 +556,7 @@ namespace Crucibulum.Tests
                 {
                     if (watching == null) return;
                     if (Math.Floor(p.MinPos.X) != watching.X || Math.Floor(p.MinPos.Z) != watching.Z) return;
-                    seen.Add(new Spawn(__instance is ServerMain, spark, p.MinQuantity, p.AddQuantity));
+                    seen.Add(new Spawn(__instance is ServerMain, spark, p.MinQuantity, p.AddQuantity, p.AddVelocity.Y));
                 }
             }
 

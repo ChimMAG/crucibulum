@@ -98,8 +98,9 @@ public class CrucibulumConfig
     public bool SparksSpreadFire = false;
 
     /// <summary>
-    /// How often a melting charge throws sparks, as a multiple of the default. 0 turns them off;
-    /// the burst when a melt finishes has a setting of its own.
+    /// How many sparks a melting charge throws, as a multiple of the default - which builds from
+    /// about seven a second as a melt starts to about twenty-five as it nears liquid. 0 turns them
+    /// off; the burst when a melt finishes has a setting of its own.
     ///
     /// Only how it looks: what can start a fire is <see cref="SparkLandingSeconds"/>. Read live.
     /// </summary>

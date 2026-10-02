@@ -328,7 +328,9 @@ also the one thing in the mod that needs a Harmony patch - see below for why.
 ### Sparks that start fires
 
 A charge throws sparks out of the crucible's mouth while it is melting, and stops once the metal
-is all liquid - a molten crucible only smokes. With `SparksSpreadFire` on, those sparks can set
+is all liquid - a molten crucible only smokes. They are the sparks vanilla throws when a crucible
+is poured into a mold, and they build as the melt goes on: a trickle as it starts, thrown gently,
+growing to four times as many thrown as hard as a pour by the time the metal is nearly liquid. With `SparksSpreadFire` on, those sparks can set
 light to things. Every so often while the metal is melting - once every ten seconds on average,
 which `SparkLandingSeconds` sets - one comes down somewhere within two blocks of the forge. If it
 lands in an open space beside something that burns, it starts a fire there exactly as vanilla's
